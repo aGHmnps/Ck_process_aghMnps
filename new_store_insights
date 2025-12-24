@@ -1,0 +1,820 @@
+import pandas as pd
+
+
+#FORM NB
+def periodesRoulagesEPS (eps):
+    ############# PERIODES OU IL Y A "1"  #############
+    switchS,switchE,=False,False
+    start,end = "",""
+    couple = []
+
+    for c in range(len(eps)):
+        if eps["ETAT_PRINCIP_SEV"][c] == 1.0 and not switchS and not switchE  :
+            switchS = True
+            start= eps["TIMESTAMP"][c]
+        elif eps["ETAT_PRINCIP_SEV"][c] == 1.0 and switchS   :
+            switchE = True
+            end= eps["TIMESTAMP"][c]
+        elif eps["ETAT_PRINCIP_SEV"][c] == 0.0 and switchS and switchE  :
+            couple.append([start,end,end-start])
+            switchS,switchE=False,False
+            start,end = "",""
+    eps_10 = pd.DataFrame(couple, columns = ["start","end","duree"])
+    
+    return eps_10
+
+
+def savePandas2sig(dfT,FICHIER_LOG,sig,signaux_trouves,ligne,roulage):
+    conducteur,pret,cpg,vis = ligne.split(";")[0],ligne.split(";")[1],ligne.split(";")[2],ligne.split(";")[3]
+    run = ligne.split(";")[4]
+    trame = "%03X"%(int(signaux_trouves["nom"].split(":")[2]))
+    chantitle = "CAN@"+signaux_trouves['reseau']+"@"+trame+"@"+signaux_trouves['channel']
+    md = {"colonne":sig,"Chantitle":chantitle,"Frequence":signaux_trouves["freq"],"unite":signaux_trouves["unite"]}
+    url = os.getcwd()+"/Archive/"+cpg+"_"+vis+"_"+conducteur+"_"+pret+".ess/"+run+"_"+roulage+".mas"
+
+    if not os.path.exists(url): 
+        os.makedirs(url)             
+    try :
+        Lexade.pandas2sig(dfT,url,md)
+    except Exception as inst: 
+        with open(FICHIER_LOG,'a') as log:
+            log.write(str(datetime.now())+" - ERREUR : ECHEC Lexade.pandas2sig "+sig+"\n")
+            log.write(str(type(inst)))    # the exception instance
+            log.write(str(inst.args) )    # arguments stored in .args
+            log.write(str(inst))        # __str__ allows args to be printed directly,
+
+def saveMainSignaux(dfT,freq,sig):
+    dfT.to_csv(os.getcwd()+"/TEMP/original_"+sig+".csv", index = False, header=True, encoding='utf-8',sep=";")
+    if sig in ("ETAT_PRINCIP_SEV"):
+        dfT.to_csv(os.getcwd()+"/TEMP/original_"+sig+"2.csv", index = False, header=True, encoding='utf-8',sep=";")
+    auxFreq = pd.DataFrame([[sig,freq]], columns=["Signal","Frequence"])   
+   
+    if not "frequences.csv" in os.listdir(os.getcwd()+"/TEMP"):
+        auxFreq.to_csv(os.getcwd()+"/TEMP/frequences.csv", index = False, header=True, encoding='utf-8',sep=";")
+        
+    else:
+        frequences = pd.read_csv(os.getcwd()+"/TEMP/frequences.csv",sep=";", engine="python",encoding="ISO-8859-1")
+        frequences = pd.concat([frequences, auxFreq]).reset_index(drop=True)
+        frequences.to_csv(os.getcwd()+"/TEMP/frequences.csv", index = False, header=True, encoding='utf-8',sep=";")
+            
+    
+def imprimerStatKPIs(signaux_trouves,FICHIER_JOURNAL,FICHIER_LOG,url,temp0,journal,roulage,RUN,describe):
+
+    
+    try :
+        statistique = pd.DataFrame(describe, columns=["ROULAGE","ID_CONDUCTEUR","ID_PRET","CAMPAGNE","VIS","RUN","SIGNAL","DUREE","COUNT","MEAN","STD","MIN","MAX","FIRST","LAST","P1","P10","P25","P50","P75","P90","P99","Per0","Per1","Per2","Per3","distanceOdometre","tempsKMcorrige","perKMcorrige","vitMAX","vitFirst","vitLast","tempsVVCorrige","periodesVVCorrige","distribuDistanceVitesse","distribuTempsVitesse","PV_EPS_OK","PV_EPS_pos_nok","dureeRoulage_","vitesseMoyenneRoulage","tempsVILVCorrige","periodesVILVCorrige","ARV_Distance_kmA","ARV_Distance_kmR","ARV_Distance_kmV","ARV_Time_hA","ARV_Tme_hR","ARV_Time_hV"])
+
+        statistique.to_csv(url+"/KPI_HoroDat_channel_"+RUN+"_"+roulage+".csv", index = False, header=True, encoding='utf-8',sep=";")    
+      
+    except : 
+        with open(FICHIER_LOG,'a') as log:
+            log.write(str(datetime.now())+" - ERREUR : ECHEC KPI_HoroDat_channel_"+RUN+"_"+roulage+".csv \n")
+
+    #try :                        
+    #    metadonneRoulage.to_csv(url+"/TRAJET.csv", index = False, header=True, encoding='utf-8',sep=";")   
+    #except : 
+    #    with open(FICHIER_LOG,'a') as log:
+    #        log.write(str(datetime.now())+" - ERREUR : ECHEC metadonneRoulage.to_json "+sig+"\n")
+
+    #try :
+    #    newURL = url.split("/"+run+"_"+roulage)[0]
+        #url = os.getcwd()+"/Archive/"+cpg+"_"+vis+"_"+conducteur+"_"+pret+".ess/"+run+"_"+roulage+".mas"
+        #with open(newURL+"/signaux_trouves.json","w") as json:
+        #    json.write(str(signaux_trouves).replace("\'","\""))
+    #    signaux_trouves.to_csv(newURL+"/signaux_trouves.csv", index = False, header=True, encoding='utf-8',sep=";")  
+    #except : 
+    #    with open(FICHIER_LOG,'a') as log:
+    #        log.write(str(datetime.now())+" - ERREUR : ECHEC signaux_trouves json.dump "+sig+"\n")
+   
+    OK = False
+    for v in signaux_trouves:
+        if signaux_trouves[v]:                        
+            if signaux_trouves[v]["erreur"] == "non":
+                OK = True
+
+    if os.path.exists(url.split(".ess")[0]+".ess") :  
+            
+        with zipfile.ZipFile(url.split(".ess")[0]+".ess.zip","w") as fzip:
+            for mas in os.listdir(url.split(".ess")[0]+".ess") :
+                if os.path.isdir(url.split(".ess")[0]+".ess"+"/"+mas) :
+                    for sig in os.listdir(url.split(".ess")[0]+".ess"+"/"+mas) :
+                        fzip.write(url.split(".ess")[0]+".ess"+"/"+mas+"/"+sig,arcname=mas+"/"+sig)
+    if  OK:                  
+        journal[RUN] = datetime.now() - temp0 ### On sauvegarde le temps de execution
+        with open(FICHIER_JOURNAL,"w") as jrl:
+            jrl.write(str(journal))
+
+def merge_parquets(df):
+    list_lifetime_cycles = list(df[ID].unique())
+
+    folder_path = volume_data
+    
+    def join_dfs(dfs: list) :
+        def join_and_handle_duplicates(df1, df2) :
+            common_columns = set(df1.columns).intersection(df2.columns) - {TCID_RUNID, ID, TIMESTAMP, TEMPS}
+            for col in common_columns:
+                df2 = df2.drop(col)
+            return df1.join(df2, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+        return reduce(join_and_handle_duplicates, dfs)
+    def read_parquet(file_path: str) :
+        return spark.read.parquet(file_path)
+    
+    # Process each lifetime cycle in bulk
+    for lifetimecycle in list_lifetime_cycles:
+        # Get matching files for the current lifetime cycle
+        matching_files = [
+            os.path.join(folder_path, file_name)
+            for file_name in os.listdir(folder_path)
+            if file_name.endswith('.parquet') and f"{lifetimecycle}_" in file_name
+        ]
+        
+        if not matching_files:
+            continue
+        # Read all matching files at once
+        with ThreadPoolExecutor() as executor:
+            dfs = list(executor.map(read_parquet, matching_files))  
+        
+        # Join all dataframes in one go using reduce
+        merged_df = join_dfs(dfs)
+        merged_output_path = os.path.join(folder_path, f"{lifetimecycle}.parquet")
+        
+        if os.path.exists(merged_output_path):
+            parquet_df = spark.read.parquet(merged_output_path)
+
+            if overwrite_mode:
+                columns_to_drop = [col for col in parquet_df.columns if col not in [TCID_RUNID, ID, TIMESTAMP, TEMPS] and col in merged_df.columns]
+                parquet_df = parquet_df.drop(*columns_to_drop)
+                merged_df = merged_df.join(parquet_df, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+            else:
+                columns_to_drop = [col for col in merged_df.columns if col not in [TCID_RUNID, ID, TIMESTAMP, TEMPS] and col in parquet_df.columns]
+                merged_df = merged_df.drop(*columns_to_drop)
+                merged_df = parquet_df.join(merged_df, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+        
+        merged_df.write.mode("overwrite").parquet(merged_output_path)
+        # Delete the original Parquet files
+        for file_path in matching_files:
+            os.remove(file_path)
+
+    print("Parquet merging completed.")
+
+def join_dfs(dfs: list) :
+        def join_and_handle_duplicates(df1, df2) :
+            common_columns = set(df1.columns).intersection(df2.columns) - {TCID_RUNID, ID, TIMESTAMP, TEMPS}
+            for col in common_columns:
+                df2 = df2.drop(col)
+            return df1.join(df2, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+        return reduce(join_and_handle_duplicates, dfs)
+        
+def read_parquet(file_path: str) :
+    return spark.read.parquet(file_path)
+
+def load_parquet_files(volume, t_r, keys):
+    parquet_files = [
+        entry.path for entry in os.scandir(volume) 
+        if entry.name.endswith('.parquet') and t_r in entry.name
+    ]
+    
+    if not parquet_files:
+        return None
+    
+    df_list = [spark.read.parquet(file) for file in parquet_files]
+    df = df_list[0]
+
+    for i in range(1, len(df_list)):
+        df = df.unionByName(df_list[i], allowMissingColumns=True)
+
+    df = df.withColumns({'Loan_Conducteur_ID': F.lit(Loan_Conducteur_ID), 'VIN': F.lit(VIN)})
+    return df.select(*keys, *sorted([col for col in df.columns if col not in keys]))
+
+def write_results(tcid, runid):
+    t_r = f"{tcid}_{runid}"
+    keys_data = ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID, TIMESTAMP, TEMPS]
+    keys_meta = ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID, "signal"]
+    keys_info = ["Loan_Conducteur_ID", "VIN", TCID_RUNID, "Channels_name"]
+
+    # Load dataframes with constant columns and reorder inside load_parquet_files
+    df_final_data = load_parquet_files(volume_data, t_r, keys_data)
+    df_final_meta = load_parquet_files(volume_meta, t_r, keys_meta)
+    df_final_info = load_parquet_files(volume_info, t_r, keys_info)
+
+
+    if df_final_data is not None:
+        
+        if spark.catalog.tableExists(timeseries_table):
+            df_timeseries = spark.table(timeseries_table).filter(f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" and {TCID_RUNID} = "{t_r}"')
+
+            if not df_timeseries.isEmpty():
+                list_col_left = df_final_data.columns
+                list_col_right = df_timeseries.columns
+
+                if overwrite_mode:
+                    #keep all in left and only the missing in right
+                    col_toKeep_in_right = keys_data + [c for c in list_col_right if c not in list_col_left]
+                    df_final_data = df_final_data.join(df_timeseries.select(*col_toKeep_in_right), on=keys_data, how="outer")
+                else:
+                    #keep all in right and only the missing in left
+                    col_toKeep_in_left = keys_data + [c for c in list_col_left if c not in list_col_right]
+                    df_final_data = df_timeseries.join(df_final_data.select(*col_toKeep_in_left), on=keys_data, how="outer")
+ 
+        df_final_data = df_final_data.select(*(F.col(c).cast("double") if ":" in c else F.col(c) for c in df_final_data.columns))
+        write_delta(df_final_data, timeseries_table, t_r, ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID])
+
+    if df_final_meta is not None:
+        if spark.catalog.tableExists(metadata_table):
+            df_metadata = spark.table(metadata_table).filter(f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" and tcid_runid = "{t_r}"')
+            if not df_metadata.isEmpty():
+
+                rank_final, rank_metadata = (1, 2) if overwrite_mode else (2, 1)
+                df_final_meta = df_final_meta.withColumn("rank", F.lit(rank_final))
+                df_metadata = df_metadata.withColumn("rank", F.lit(rank_metadata))
+                
+                union_df = df_final_meta.unionByName(df_metadata)
+                    
+                window_spec = W.Window.partitionBy(*keys_meta).orderBy("rank")
+                df_final_meta = (
+                    union_df.withColumn("row_num", F.row_number().over(window_spec))
+                            .filter("row_num = 1")
+                            .drop("row_num", "rank")
+                )
+        
+        df_write_meta = df_final_meta.drop_duplicates(keys_meta)
+        write_delta(df_write_meta, metadata_table, t_r, ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID])
+
+
+    if df_final_info is not None:
+        if spark.catalog.tableExists(signals_table):
+            df_signals = spark.table(signals_table).filter(f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" and tcid_runid = "{t_r}"')
+
+            if not df_signals.isEmpty():
+                rank_final, rank_signals = (1, 2) if overwrite_mode else (2, 1)
+                df_final_info = df_final_info.withColumn('rank', F.lit(rank_final))
+                df_signals = df_signals.withColumn('rank', F.lit(rank_signals))
+
+                union_df = df_final_info.unionByName(df_signals)
+
+                window_spec = W.Window.partitionBy(*keys_info).orderBy("rank")
+                df_final_info = (
+                    union_df.withColumn("row_num", F.row_number().over(window_spec))
+                            .filter("row_num = 1")
+                            .drop("row_num", "rank")
+                )
+
+        df_write_info = df_final_info.drop_duplicates(keys_info)
+        write_delta(df_write_info, signals_table, t_r, ["Loan_Conducteur_ID", "VIN", TCID_RUNID])
+
+def write_delta(df_final, table, t_r, partition_keys):
+    if df_final.isEmpty(): return
+    
+    print(f'Writing to {table}')
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+    df_final = df_final.checkpoint(eager=True)
+    
+    # Handle table existence and write
+    if spark.catalog.tableExists(table):
+        condition = f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" AND TCID_RUNID = "{t_r}"'
+        spark.sql(f'DELETE FROM {table} WHERE {condition}').count()
+        df_final.write.format("delta").option("mergeSchema", "true").partitionBy(*partition_keys).mode("append").saveAsTable(table)
+    else:
+        df_final.write.format("delta").option("mergeSchema", "true").partitionBy(*partition_keys).mode("overwrite").saveAsTable(table)
+
+def write_idCard(df_id_card):
+    keys_idCard = ["Loan_Conducteur_ID", "VIN", ID, "KPI_Name"]
+
+    df_id_card = df_id_card.withColumns({'Loan_Conducteur_ID': F.lit(Loan_Conducteur_ID), 'VIN': F.lit(VIN)})
+
+    df_id_card = df_id_card.dropDuplicates()
+    print(f'Writing to {idCard_table}')
+
+    if spark.catalog.tableExists(idCard_table):
+        DeltaTable.forName(spark, idCard_table).delete(F.col("Loan_Conducteur_ID") == Loan_Conducteur_ID)
+        mode = "append"
+    else:
+        mode = "overwrite"
+
+    df_id_card.write.format("delta").partitionBy(*keys_idCard).mode(mode).saveAsTable(idCard_table)
+
+
+
+
+########################################################################################################################################
+from pyspark.sql.functions import col, lit, coalesce
+from pyspark.sql import SparkSession
+
+def merge_and_save(df_new, table_name, key_cols, overwrite=False):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+
+    full_table_name = f"dafe_dev.customer_knowledge_utils.{table_name}"
+
+    if not spark.catalog.tableExists(full_table_name):
+        # La table n'existe pas → création directe
+        df_new.write.format("delta") \
+            .option("mergeSchema", "true") \
+            .partitionBy(key_cols) \
+            .mode("overwrite") \
+            .saveAsTable(full_table_name)
+        return
+
+    # La table existe → fusion
+    df_existing = spark.read.table(full_table_name)
+    all_columns = list(set(df_new.columns).union(set(df_existing.columns)))
+
+    df_joined = df_existing.alias("old").join(df_new.alias("new"), on=key_cols, how="outer")
+
+    def merged_column(col_name):
+        in_old = col_name in df_existing.columns
+        in_new = col_name in df_new.columns
+        col_old = col(f"old.{col_name}") if in_old else lit(None)
+        col_new = col(f"new.{col_name}") if in_new else lit(None)
+
+        if col_name in key_cols:
+            return coalesce(col_new, col_old).alias(col_name)
+
+        if in_old and in_new:
+            return (col_new if overwrite else col_old).alias(col_name)
+
+        elif in_new:
+            return col_new.alias(col_name)
+
+        else:
+            return col_old.alias(col_name)
+
+    df_merged = df_joined.select(*[merged_column(c) for c in all_columns])
+
+    df_merged.write.format("delta") \
+        .option("mergeSchema", "true") \
+        .partitionBy(key_cols) \
+        .mode("overwrite") \
+        .saveAsTable(full_table_name)
+
+
+
+def merge_and_save_trip_table(df_results, table_name, overwrite=False):
+    key_cols = ["DRIVER_ID", "trip_id"]
+    merge_and_save(df_results, table_name, key_cols, overwrite)
+def merge_and_save_driver_table(df_results_driver, table_name, overwrite=False):
+    key_cols = ["DRIVER_ID", "month"]
+    merge_and_save(df_results_driver, table_name, key_cols, overwrite)
+def merge_and_save_insights_table(df_insights, table_name, overwrite=False):
+    key_cols = ["study_title", "criteria", "zone"]
+    merge_and_save(df_insights, table_name, key_cols, overwrite)
+
+
+def merge_and_save_global(level, table, df_results, overwrite):
+    if level == 'Trip_id':
+        merge_and_save_trip_table(df_results, table, overwrite)
+    elif level == 'VIn':
+        merge_and_save_driver_table(df_results, table, overwrite)
+    elif level == 'insight_pfm':
+        merge_and_save_insights_table(df_results, table, overwrite)
+    else:
+        raise ValueError(f"Niveau de sauvegarde inconnu: {level}")
+
+
+
+
+from pyspark.sql.types import *
+
+def get_transform_trip_schema():
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()  # This reuses the existing SparkSession in Databricks
+
+    return StructType([
+        StructField("DRIVER_ID", StringType(), True),
+        StructField("VIN", StringType(), True),
+        StructField("TRIP_ID", DoubleType(), True),
+        StructField("month", IntegerType(), True),
+        StructField("year", IntegerType(), True),
+        StructField("trip_start", TimestampType(), True),
+        StructField("trip_end", TimestampType(), True),
+        StructField("duration_trip_h", DoubleType(), True),
+        StructField("distance_trip_integral_km", DoubleType(), True),
+        StructField("sum_distance_CITY_km", DoubleType(), True),
+        StructField("sum_distance_ROAD_km", DoubleType(), True),
+        StructField("sum_distance_HIGHWAY_km", DoubleType(), True),
+        StructField("trip_quality_flag", IntegerType(), True),
+        StructField("criteria", StringType(), True),           # column name being analyzed
+        StructField("dimension", StringType(), True),          # H0D, H1D, H2D
+        StructField("correspondant_value", StringType(), True) # serialized dict/val
+    ])
+
+
+import json
+
+def transform_trip_dataframe(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    records = []
+
+    for _, row in df.iterrows():
+        base_info = {
+            "DRIVER_ID": row["DRIVER_ID"],
+            "VIN": row["VIN"],
+            "TRIP_ID": row["TRIP_ID"],
+            "month": row["month"],
+            "year": row["year"],
+            "trip_start": row["trip_start"],
+            "trip_end": row["trip_end"],
+            "duration_trip_h": row["duration_trip_h"],
+            "distance_trip_integral_km": row["distance_trip_integral_km"],
+            "sum_distance_CITY_km": row["sum_distance_CITY_km"],
+            "sum_distance_ROAD_km": row["sum_distance_ROAD_km"],
+            "sum_distance_HIGHWAY_km": row["sum_distance_HIGHWAY_km"],
+            "trip_quality_flag": row["trip_quality_flag"]
+        }
+
+        for col in cols:
+            val = row[col]
+
+            # Try to parse JSON strings back into dicts
+            if isinstance(val, str):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict):
+                        val = parsed
+                except Exception:
+                    pass
+
+            if isinstance(val, dict):
+                # H2D if any nested dicts exist
+                if any(isinstance(v, dict) for v in val.values()):
+                    records.append({
+                        **base_info,
+                        "criteria": col,
+                        "dimension": "H2D",
+                        "correspondant_value": json.dumps(val)
+                    })
+                else:
+                    records.append({
+                        **base_info,
+                        "criteria": col,
+                        "dimension": "H1D",
+                        "correspondant_value": json.dumps(val)
+                    })
+            else:
+                # Scalar value -> H0D
+                records.append({
+                    **base_info,
+                    "criteria": col,
+                    "dimension": "H0D",
+                    "correspondant_value": str(val)
+                })
+
+    return pd.DataFrame(records)
+
+
+import pandas as pd
+
+# def transform_trip_dataframe(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+#     records = []
+
+#     for _, row in df.iterrows():
+#         base_info = {
+#             "DRIVER_ID": row["DRIVER_ID"],
+#             "TRIP_ID": row["TRIP_ID"],
+#             "month": row["month"],
+#             "year": row["year"],
+#             "trip_start": row["trip_start"],
+#             "trip_end": row["trip_end"],
+#             "duration_trip_h": row["duration_trip_h"],
+#             "distance_trip_integral_km": row["distance_trip_integral_km"],
+#             "sum_distance_CITY_km": row["sum_distance_CITY_km"],
+#             "sum_distance_ROAD_km": row["sum_distance_ROAD_km"],
+#             "sum_distance_HIGHWAY_km": row["sum_distance_HIGHWAY_km"],
+#             "trip_quality_flag": row["trip_quality_flag"]
+#         }
+
+#         for col in cols:
+#             val = row[col]
+
+#             if isinstance(val, dict):
+#                 # Determine if it's H1D or H2D
+#                 for k, v in val.items():
+#                     if isinstance(v, dict):  # H2D
+#                         records.append({
+#                             **base_info,
+#                             "criteria": col,
+#                             "dimension": "H2D",
+#                             "correspondant_value": str(val)  
+#                         })
+#                     else:  # H1D
+#                         records.append({
+#                             **base_info,
+#                             "criteria": col,
+#                             "dimension": "H1D",
+#                             "correspondant_value": str(val)  
+#                         })
+#             else:
+#                 # Scalar value -> H0D
+#                 records.append({
+#                     **base_info,
+#                     "criteria": col,
+#                     "dimension": "H0D",
+#                     "correspondant_value": str(val)
+#                 })
+
+#     return pd.DataFrame(records)
+
+
+
+from pyspark.sql.types import *
+
+def get_transform_drivers_schema():
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()  # This reuses the existing SparkSession in Databricks
+    
+    return StructType([
+        StructField("DRIVER_ID", StringType(), True),
+        StructField("VIN", StringType(), True),
+        StructField("month", IntegerType(), True),
+        StructField("year", IntegerType(), True),
+        StructField("first_trip", TimestampType(), True),
+        StructField("last_trip", TimestampType(), True),
+        StructField("total_trips", IntegerType(), True),
+        StructField("valid_trips", IntegerType(), True),
+        StructField("dist_tot_integ_km", DoubleType(), True),
+        StructField("total_duration_h", DoubleType(), True),
+        StructField("sum_distance_driver_year_month_CITY_km", DoubleType(), True),
+        StructField("sum_distance_driver_year_month_ROAD_km", DoubleType(), True),
+        StructField("sum_distance_driver_year_month_HIGHWAY_km", DoubleType(), True),
+        StructField("valid_client", IntegerType(), True),
+        StructField("criteria", StringType(), True),             # analyzed column
+        StructField("dimension", StringType(), True),            # H0D, H1D, H2D
+        StructField("classA", StringType(), True),               # first-level key
+        StructField("classB", StringType(), True),               # second-level key
+        StructField("classC", StringType(), True),               # reserved for deeper hierarchy
+        StructField("correspondant_value", DoubleType(), True)   # 
+    ])
+
+
+
+
+import json
+
+def transform_drivers_dataframe(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+
+    records = []
+
+    for _, row in df.iterrows():
+        base_info = {
+            "DRIVER_ID": row["DRIVER_ID"],
+            "VIN": row["VIN"],
+            "month": row["month"],
+            "year": row["year"],
+            "first_trip": row["first_trip"],
+            "last_trip": row["last_trip"],
+            "total_trips": row["total_trips"],
+            "valid_trips": row["valid_trips"],
+            "dist_tot_integ_km": row["dist_tot_integ_km"],
+            "total_duration_h": row["total_duration_h"],
+            "sum_distance_driver_year_month_CITY_km": row["sum_distance_driver_year_month_CITY_km"],
+            "sum_distance_driver_year_month_ROAD_km": row["sum_distance_driver_year_month_ROAD_km"],
+            "sum_distance_driver_year_month_HIGHWAY_km": row["sum_distance_driver_year_month_HIGHWAY_km"],
+            "valid_client": row["valid_client"],
+        }
+
+        for col in cols:
+            val = row[col]
+
+            # Try to parse JSON strings back to dicts
+            if isinstance(val, str):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict):
+                        val = parsed
+                except Exception:
+                    pass
+
+            # Case 1: Scalar -> H0D
+            if not isinstance(val, dict):
+                records.append({
+                    **base_info,
+                    "criteria": col,
+                    "dimension": "H0D",
+                    "classA": "none",
+                    "classB": "none",
+                    "classC": "none",
+                    "correspondant_value": val
+                })
+            
+            # Case 2: Dict -> H1D or H2D
+            else:
+                for k, v in val.items():
+                    if isinstance(v, dict):  # H2D
+                        for k2, v2 in v.items():
+                            records.append({
+                                **base_info,
+                                "criteria": col,
+                                "dimension": "H2D",
+                                "classA": k,
+                                "classB": k2,
+                                "classC": "none",
+                                "correspondant_value": v2
+                            })
+                    else:  # H1D
+                        records.append({
+                            **base_info,
+                            "criteria": col,
+                            "dimension": "H1D",
+                            "classA": k,
+                            "classB": "none",
+                            "classC": "none",
+                            "correspondant_value": v
+                        })
+
+    return pd.DataFrame(records)
+
+
+# def transform_drivers_dataframe(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+
+#     records = []
+
+#     for _, row in df.iterrows():
+#         base_info = {
+#             "DRIVER_ID": row["DRIVER_ID"],
+#             "month": row["month"],
+#             "year": row["year"],
+#             "first_trip": row["first_trip"],
+#             "last_trip": row["last_trip"],
+#             "total_trips": row["total_trips"],
+#             "valid_trips": row["valid_trips"],
+#             "dist_tot_integ_km": row["dist_tot_integ_km"],
+#             "sum_distance_driver_year_month_CITY_km": row["sum_distance_driver_year_month_CITY_km"],
+#             "sum_distance_driver_year_month_ROAD_km": row["sum_distance_driver_year_month_ROAD_km"],
+#             "sum_distance_driver_year_month_HIGHWAY_km": row["sum_distance_driver_year_month_HIGHWAY_km"],
+#             "valid_client": row["valid_client"],
+#         }
+
+#         for col in cols:
+#             val = row[col]
+
+#             # Case 1: Scalar -> H0D
+#             if not isinstance(val, dict):
+#                 records.append({
+#                     **base_info,
+#                     "criteria": col,
+#                     "dimension": "H0D",
+#                     "classA": "none",
+#                     "classB": "none",
+#                     "classC": "none",
+#                     "correspondant_value": val
+#                 })
+            
+#             # Case 2: Dict -> H1D or H2D
+#             else:
+#                 for k, v in val.items():
+#                     if isinstance(v, dict):  # H2D
+#                         for k2, v2 in v.items():
+#                             records.append({
+#                                 **base_info,
+#                                 "criteria": col,
+#                                 "dimension": "H2D",
+#                                 "classA": k,
+#                                 "classB": k2,
+#                                 "classC": "none",
+#                                 "correspondant_value": v2
+#                             })
+#                     else:  # H1D
+#                         records.append({
+#                             **base_info,
+#                             "criteria": col,
+#                             "dimension": "H1D",
+#                             "classA": k,
+#                             "classB": "none",
+#                             "classC": "none",
+#                             "correspondant_value": v
+#                         })
+
+#     return pd.DataFrame(records)
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from datetime import date
+
+
+def store_trip_insights(df_new, table_name, study_title=None, overwrite=False):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+
+    key_cols = ["DRIVER_ID", "TRIP_ID", "criteria"]
+
+    # ✅ Add study_title and dt columns
+    df_new = (
+        df_new
+        .withColumn("dt", F.current_date())
+        .withColumn("study_title", F.lit(study_title))
+    )
+
+    if not spark.catalog.tableExists(table_name):
+        # Table does not exist → create
+        df_new.write.format("delta") \
+            .option("mergeSchema", "true") \
+            .option("overwriteSchema", "true") \
+            .partitionBy("DRIVER_ID", "TRIP_ID") \
+            .mode("overwrite") \
+            .saveAsTable(table_name)
+        return
+
+    df_existing = spark.read.table(table_name)
+
+    if overwrite:
+        # Delete old rows matching new keys, then append new ones
+        cond = [df_existing[k] == df_new[k] for k in key_cols]
+        df_filtered = df_existing.join(df_new, cond, "left_anti")
+        df_final = df_filtered.unionByName(df_new)
+    else:
+        # Just append without remodriverg old rows
+        df_final = df_existing.unionByName(df_new)
+
+    # Write final DF with dynamic dt
+    df_final.write.format("delta") \
+        .option("mergeSchema", "true") \
+        .option("overwriteSchema", "true") \
+        .partitionBy("DRIVER_ID", "TRIP_ID") \
+        .mode("overwrite") \
+        .saveAsTable(table_name)
+
+
+
+def store_drivers_insights(df_new, table_name, study_title=None, overwrite=False):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+
+    key_cols = ["DRIVER_ID", "month", "year", "criteria"]
+
+    # ✅ Add study_title and dt columns
+    df_new = (
+        df_new
+        .withColumn("dt", F.current_date())
+        .withColumn("study_title", F.lit(study_title))
+    )
+
+    if not spark.catalog.tableExists(table_name):
+        # Table does not exist → create
+        df_new.write.format("delta") \
+            .option("mergeSchema", "true") \
+            .option("overwriteSchema", "true") \
+            .partitionBy("DRIVER_ID", "year", "month") \
+            .mode("overwrite") \
+            .saveAsTable(table_name)
+        return
+
+    df_existing = spark.read.table(table_name)
+
+    if overwrite:
+        # Delete old rows matching new keys, then append new ones
+        cond = [df_existing[k] == df_new[k] for k in key_cols]
+        df_filtered = df_existing.join(df_new, cond, "left_anti")
+        df_final = df_filtered.unionByName(df_new)
+    else:
+        # Just append without removing old rows
+        df_final = df_existing.unionByName(df_new)
+
+    # Write final DF with dynamic dt
+    df_final.write.format("delta") \
+        .option("mergeSchema", "true") \
+        .option("overwriteSchema", "true") \
+        .partitionBy("DRIVER_ID", "year", "month") \
+        .mode("overwrite") \
+        .saveAsTable(table_name)
+
+
+
+def store_pfm_insights(df, table_name="dafe_dev.customer_knowledge_utils.ck_pfm_insights", study_title=None):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+
+
+    
+    # ✅ Add dt column and optional study_title
+    df_with_dt = (
+        df
+        .withColumn("dt", F.current_date())
+        .withColumn("study_title", F.lit(study_title))
+    )
+
+    # Check if table exists
+    if spark._jsparkSession.catalog().tableExists(table_name):
+        df_with_dt.write.mode("append").format("delta").saveAsTable(table_name)
+    else:
+        df_with_dt.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(table_name)
+
+
+
+def store_insights(df_new, level, table_name=None, study_title=None, overwrite=False):
+
+    if level.upper() == "TRIP_ID":
+        if table_name is None:
+            table_name = "dafe_dev.customer_knowledge_utils.ck_trips_insights_ivdp"
+        store_trip_insights(df_new, table_name=table_name, study_title=study_title, overwrite=overwrite)
+
+    elif level.upper() == "DRIVER_ID":
+        if table_name is None:
+            table_name = "dafe_dev.customer_knowledge_utils.ck_drivers_insights_ivdp"
+        store_drivers_insights(df_new, table_name=table_name, study_title=study_title, overwrite=overwrite)
+
+    elif level.upper() == "PFM":
+        if table_name is None:
+            table_name = "dafe_dev.customer_knowledge_utils.ck_pfm_insights"
+        store_pfm_insights(df_new, table_name=table_name, study_title=study_title)
+        #check if matrix is not None
+        store_pfm_insights(df_new["dfMatrix"], table_name=insights_values_Ndim, study_title=study_title) #edit of store insights function to handel multi dim is here
+    else:
+        raise ValueError("Invalid level. Must be either 'TRIP_ID', 'DRIVER_ID' or 'PFM'.")
