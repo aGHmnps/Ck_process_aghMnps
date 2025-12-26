@@ -688,14 +688,185 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from datetime import date
 
+#definition of new storage functions compatible with dims H0D,H1D,H2D,H3D
+import hashlib, re, string, secrets
+import pandas as pd
+import json
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+def generate_study_ref(study_title):
+    """
+    Generate unique Study_ref from study title
+    Extracts prefix from [brackets] or uses 'PFM' default, adds random 6-char suffix
+    """
+    if not study_title:
+        study_title = f"STUDY_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    match = re.search(r'\[([^\]]+)\]', study_title)
+    
+    if match:
+        prefix = match.group(1).strip().upper()
+    else:
+        prefix = "PFM"
+    
+    suffix = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+    
+    return f"{prefix}_{suffix}"
+
+def explode_matrix_to_dataframe(dfmatrix_json, study_ref, criteria_label):
+    """
+    Explode nested 3D JSON matrix into flat dataframe for Ndim table
+    
+    Expected structure (two layers):
+    {
+      "x_axis": "regime_mel",
+      "y_axis": "couple_mel",
+      "x_bins": "min=-90;max=10410;step=50",
+      "y_bins": "min=-4000;max=5000;step=5",
+      "matrix": {
+        "classA": {"classB": {"classC": value}}
+      }
+    }
+    
+    Returns: pandas DataFrame with columns [Study_ref, Criteria_label, Dimension, 
+                                           Dimensions_boudaries, ClassA, ClassB, ClassC, 
+                                           Correspondant_value]
+    """
+    if not dfmatrix_json or dfmatrix_json in ["", "none", "None", None]:
+        return None
+    
+    try:
+        # Parse JSON
+        if isinstance(dfmatrix_json, str):
+            wrapper_data = json.loads(dfmatrix_json)
+        else:
+            wrapper_data = dfmatrix_json
+    except Exception as e:
+        print(f"⚠️  Error parsing matrix JSON: {e}")
+        return None
+    
+    if not isinstance(wrapper_data, dict):
+        return None
+    
+    # Extract boundaries metadata
+    x_axis = wrapper_data.get("x_axis", "unknown")
+    y_axis = wrapper_data.get("y_axis", "unknown")
+    x_bins = wrapper_data.get("x_bins", "")
+    y_bins = wrapper_data.get("y_bins", "")
+    
+    # Build boundaries string
+    dimensions_boundaries = f"x_axis={x_axis}; y_axis={y_axis}; x_bins=[{x_bins}]; y_bins=[{y_bins}]"
+    
+    # Extract the actual matrix
+    matrix_data = wrapper_data.get("matrix")
+    
+    if not matrix_data or not isinstance(matrix_data, dict) or len(matrix_data) == 0:
+        print(f"⚠️  No valid 'matrix' key found in dfmatrix")
+        return None
+    
+    records = []
+    
+    # Iterate through 3-level nested structure
+    for classA, level2 in matrix_data.items():
+        if not isinstance(level2, dict):
+            continue
+            
+        for classB, level3 in level2.items():
+            if not isinstance(level3, dict):
+                continue
+                
+            for classC, value in level3.items():
+                try:
+                    records.append({
+                        "Study_ref": study_ref,
+                        "Criteria_label": criteria_label,
+                        "Dimension": detect_dimension(classA, classB, classC),
+                        "Dimensions_boudaries": dimensions_boundaries,
+                        "ClassA": str(classA),
+                        "ClassB": str(classB),
+                        "ClassC": str(classC),
+                        "Correspondant_value": float(value)
+                    })
+                except (ValueError, TypeError) as e:
+                    print(f"⚠️  Skipping invalid value at [{classA}][{classB}][{classC}]: {e}")
+                    continue
+    
+    if not records:
+        return None
+    
+    return pd.DataFrame(records)
+
+def detect_dimension(classA, classB, classC):
+    """
+    Detect dimension based on which classes are not 'none'
+    """
+    classA_filled = str(classA).lower() not in ["none", ""]
+    classB_filled = str(classB).lower() not in ["none", ""]
+    classC_filled = str(classC).lower() not in ["none", ""]
+    
+    if classA_filled and classB_filled and classC_filled:
+        return "H3D"
+    elif classA_filled and classB_filled:
+        return "H2D"
+    elif classA_filled:
+        return "H1D"
+    else:
+        return "H0D"
+
+def store_pfm_insights(df, table_name, overwrite=False, add_timestamps=True):
+    """
+    Simple function to store a dataframe to a Delta table
+    
+    Parameters:
+    -----------
+    add_timestamps : bool
+        If True, add Creation_date and Modification_date columns
+        (only needed for main table, not for Ndim table)
+    """
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+    
+    if isinstance(df, pd.DataFrame):
+        spark_df = spark.createDataFrame(df)
+    else:
+        spark_df = df
+    
+    if add_timestamps:
+        df_with_dt = (
+            spark_df
+            .withColumn("Creation_date", F.current_timestamp())
+            .withColumn("Modification_date", F.current_timestamp())
+        )
+    else:
+        df_with_dt = spark_df
+    
+    # Write to table
+    if spark.catalog.tableExists(table_name):
+        if overwrite:
+            # Remove old records with same Study_ref if overwrite=True
+            if "Study_ref" in df_with_dt.columns:
+                study_refs = [row.Study_ref for row in df_with_dt.select("Study_ref").distinct().collect()]
+                existing = spark.read.table(table_name)
+                filtered = existing.filter(~F.col("Study_ref").isin(study_refs))
+                df_final = filtered.union(df_with_dt)
+                df_final.write.mode("overwrite").option("mergeSchema", "true").format("delta").saveAsTable(table_name)
+            else:
+                df_with_dt.write.mode("append").option("mergeSchema", "true").format("delta").saveAsTable(table_name)
+        else:
+            df_with_dt.write.mode("append").option("mergeSchema", "true").format("delta").saveAsTable(table_name)
+    else:
+        df_with_dt.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(table_name)
+    
+    print(f"✅ Stored {df_with_dt.count()} rows to {table_name}")
 
 def store_trip_insights(df_new, table_name, study_title=None, overwrite=False):
+    """Store trip-level insights"""
     spark = SparkSession.builder.getOrCreate()
     spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
 
     key_cols = ["DRIVER_ID", "TRIP_ID", "criteria"]
 
-    # ✅ Add study_title and dt columns
     df_new = (
         df_new
         .withColumn("dt", F.current_date())
@@ -703,7 +874,6 @@ def store_trip_insights(df_new, table_name, study_title=None, overwrite=False):
     )
 
     if not spark.catalog.tableExists(table_name):
-        # Table does not exist → create
         df_new.write.format("delta") \
             .option("mergeSchema", "true") \
             .option("overwriteSchema", "true") \
@@ -715,15 +885,12 @@ def store_trip_insights(df_new, table_name, study_title=None, overwrite=False):
     df_existing = spark.read.table(table_name)
 
     if overwrite:
-        # Delete old rows matching new keys, then append new ones
         cond = [df_existing[k] == df_new[k] for k in key_cols]
         df_filtered = df_existing.join(df_new, cond, "left_anti")
         df_final = df_filtered.unionByName(df_new)
     else:
-        # Just append without remodriverg old rows
         df_final = df_existing.unionByName(df_new)
 
-    # Write final DF with dynamic dt
     df_final.write.format("delta") \
         .option("mergeSchema", "true") \
         .option("overwriteSchema", "true") \
@@ -731,15 +898,13 @@ def store_trip_insights(df_new, table_name, study_title=None, overwrite=False):
         .mode("overwrite") \
         .saveAsTable(table_name)
 
-
-
 def store_drivers_insights(df_new, table_name, study_title=None, overwrite=False):
+    """Store driver-level insights"""
     spark = SparkSession.builder.getOrCreate()
     spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
 
     key_cols = ["DRIVER_ID", "month", "year", "criteria"]
 
-    # ✅ Add study_title and dt columns
     df_new = (
         df_new
         .withColumn("dt", F.current_date())
@@ -747,7 +912,6 @@ def store_drivers_insights(df_new, table_name, study_title=None, overwrite=False
     )
 
     if not spark.catalog.tableExists(table_name):
-        # Table does not exist → create
         df_new.write.format("delta") \
             .option("mergeSchema", "true") \
             .option("overwriteSchema", "true") \
@@ -759,15 +923,12 @@ def store_drivers_insights(df_new, table_name, study_title=None, overwrite=False
     df_existing = spark.read.table(table_name)
 
     if overwrite:
-        # Delete old rows matching new keys, then append new ones
         cond = [df_existing[k] == df_new[k] for k in key_cols]
         df_filtered = df_existing.join(df_new, cond, "left_anti")
         df_final = df_filtered.unionByName(df_new)
     else:
-        # Just append without removing old rows
         df_final = df_existing.unionByName(df_new)
 
-    # Write final DF with dynamic dt
     df_final.write.format("delta") \
         .option("mergeSchema", "true") \
         .option("overwriteSchema", "true") \
@@ -775,46 +936,91 @@ def store_drivers_insights(df_new, table_name, study_title=None, overwrite=False
         .mode("overwrite") \
         .saveAsTable(table_name)
 
-
-
-def store_pfm_insights(df, table_name="dafe_dev.customer_knowledge_utils.ck_pfm_insights", study_title=None):
-    spark = SparkSession.builder.getOrCreate()
-    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
-
-
+def store_insights_hnd(df_new, level, table_name=None, study_title=None, overwrite=False):
+    """
+    Main storage dispatcher for insights at different levels
     
-    # ✅ Add dt column and optional study_title
-    df_with_dt = (
-        df
-        .withColumn("dt", F.current_date())
-        .withColumn("study_title", F.lit(study_title))
-    )
-
-    # Check if table exists
-    if spark._jsparkSession.catalog().tableExists(table_name):
-        df_with_dt.write.mode("append").format("delta").saveAsTable(table_name)
-    else:
-        df_with_dt.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(table_name)
-
-
-
-def store_insights(df_new, level, table_name=None, study_title=None, overwrite=False):
-
+    Parameters:
+    -----------
+    df_new : DataFrame or dict
+        - For TRIP_ID/DRIVER_ID: Spark DataFrame with insights data
+        - For PFM: Dictionary with metadata fields + 'dfmatrix' field
+    
+    level : str
+        One of: 'TRIP_ID', 'DRIVER_ID', 'PFM'
+    
+    table_name : str, optional
+        Target table name (uses defaults if not specified)
+    
+    study_title : str, optional
+        Study title for TRIP_ID/DRIVER_ID levels
+    
+    overwrite : bool
+        If True, replace existing data with same keys
+    
+    Returns:
+    --------
+    str : Study_ref (for PFM level only)
+    """
+    
     if level.upper() == "TRIP_ID":
         if table_name is None:
             table_name = "dafe_dev.customer_knowledge_utils.ck_trips_insights_ivdp"
         store_trip_insights(df_new, table_name=table_name, study_title=study_title, overwrite=overwrite)
+        print(f"Trip insights stored to {table_name}")
 
     elif level.upper() == "DRIVER_ID":
         if table_name is None:
             table_name = "dafe_dev.customer_knowledge_utils.ck_drivers_insights_ivdp"
         store_drivers_insights(df_new, table_name=table_name, study_title=study_title, overwrite=overwrite)
+        print(f"Driver insights stored to {table_name}")
 
     elif level.upper() == "PFM":
-        if table_name is None:
-            table_name = "dafe_dev.customer_knowledge_utils.ck_pfm_insights"
-        store_pfm_insights(df_new, table_name=table_name, study_title=study_title)
-        #check if matrix is not None
-        store_pfm_insights(df_new["dfMatrix"], table_name=insights_values_Ndim, study_title=study_title) #edit of store insights function to handel multi dim is here
+        main_table = "dafe_dev.sf96268.ck_pfm_insights_main"
+        ndim_table = "dafe_dev.sf96268.insight_values_Ndim"
+        
+        # Validate input
+        if not isinstance(df_new, dict):
+            raise ValueError("For PFM level, df_new must be a dictionary with all metadata fields and optional 'dfmatrix' field")
+        
+        # Generate Study_ref
+        study_ref = generate_study_ref(df_new.get("Study_title", "Untitled"))
+        print(f"Generated Study_ref: {study_ref}")
+        
+        # (all fields except dfmatrix)
+        main_data = {k: v for k, v in df_new.items() if k != "dfmatrix"}
+        main_data["Study_ref"] = study_ref
+        df_main = pd.DataFrame([main_data])
+        
+        store_pfm_insights(df_main, table_name=main_table, overwrite=overwrite)
+        
+        # Check if dfmatrix exists and process it
+        dfmatrix = df_new.get("dfmatrix")
+        if dfmatrix and dfmatrix not in ["", "none", "None", None]:
+            # Explode matrix into dataframe
+            df_ndim = explode_matrix_to_dataframe(
+                dfmatrix_json=dfmatrix,
+                study_ref=study_ref,
+                criteria_label=df_new.get("Criteria_label")
+            )
+            
+            if df_ndim is not None and len(df_ndim) > 0:
+                # Store ndim table
+                store_pfm_insights(df_ndim, table_name=ndim_table, overwrite=overwrite)
+                
+                # Report dimensions stored
+                dim_summary = df_ndim.groupby('Dimension').size().to_dict()
+                print(f"✅ Stored matrix data:")
+                for dim, count in dim_summary.items():
+                    print(f"   - {dim}: {count} records")
+            else:
+                print(f"⚠️  No valid matrix data to store")
+        else:
+            print(f"No matrix data provided - only main table updated")
+        
+        return study_ref
+           
     else:
         raise ValueError("Invalid level. Must be either 'TRIP_ID', 'DRIVER_ID' or 'PFM'.")
+
+
