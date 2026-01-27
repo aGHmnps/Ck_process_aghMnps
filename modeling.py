@@ -3,17 +3,24 @@ import pandas as pd
 import statsmodels.formula.api as smf
 import matplotlib.pyplot as plt
 
+import pandas as pd
+import json
+from pyspark.sql import SparkSession
+
 import warnings
 import re
+import os
 
 from scipy import stats
 from scipy.stats import norm, lognorm, beta,expon, gamma, weibull_min, kstest, anderson
 from tqdm.notebook import tqdm
 
+import mlflow
+mlflow.sklearn.autolog(disable=True)
+mlflow.statsmodels.autolog(disable=True)
+os.environ["MLFLOW_ENABLE_ARTIFACTS_PROGRESS_BAR"] = "false"
 
 #################################################################################################################################################################"
-
-#function for class results generation
 
 #function for class results generation
 def lognormal_class_stats2(i_class_n, data, d):
@@ -942,156 +949,175 @@ def exponential_estimee(data, d=0):
         print(f"Error in exponential_estimee: {e}")
         return None
 
-#checking classes for good fit / switch to estimations
-def check_mrd_threshold_and_fallback_old(model_df, data, d, mrd_threshold):
-   
-    min_mrd = model_df['Mean relat diff'].min()
-    best_class_idx = model_df['Mean relat diff'].idxmin()
-    
-    if min_mrd > mrd_threshold:
-        # All classes exceed threshold - use estimation fallback
-        st.warning(f"⚠️ **All modeled classes have MRD > {mrd_threshold}%**")
-        st.info(f"🔄 **Fallback activated:** Using direct parameter estimation (Method of Moments)")
-        
-        fallback_result = lognormal_estimee(data, d)
-        
-        if fallback_result is None:
-            st.error("❌ Fallback estimation also failed. Data may not be suitable for lognormal modeling.")
-            return {
-                'status': 'failed',
-                'min_mrd': min_mrd,
-                'threshold': mrd_threshold,
-                'use_fallback': False,
-                'result': None
-            }
-        
-        return {
-            'status': 'fallback',
-            'min_mrd': min_mrd,
-            'threshold': mrd_threshold,
-            'use_fallback': True,
-            'result': fallback_result,
-            'best_class_idx': None
-        }
-    else:
-        # At least one class is acceptable
-        return {
-            'status': 'success',
-            'min_mrd': min_mrd,
-            'threshold': mrd_threshold,
-            'use_fallback': False,
-            'result': None,
-            'best_class_idx': best_class_idx
-        }
 
-def check_mrd_threshold_and_fallback(model_df, data, d, mrd_threshold, distribution_type="lognormal"):
+def check_mrd_threshold_and_fallback_PDF(model_df, data, d, mrd_threshold, distribution_type="lognormal"):
     """
-    Check if MRD threshold is exceeded for ALL percentiles (P1%, P50%, P99%) 
-    and trigger fallback to estimation if needed.
+    Compare fallback estimation MRD with class modeling MRDs and select the best approach.
+    
+    Logic:
+    1. Compute fallback estimation for the given distribution
+    2. Calculate MRD for fallback
+    3. Compare fallback MRD with ALL class modeling MRDs
+    4. Return the approach with lowest MRD
     
     Parameters:
     -----------
     model_df : DataFrame
-        Model results from class-based fitting
+        Model results from class-based fitting with columns including 'Mean relat diff'
     data : array-like
         Input data
     d : float
         Displacement parameter
     mrd_threshold : float
-        MRD threshold percentage (e.g., 10 for 10%)
+        MRD threshold percentage (e.g., 10 for 10%) - used for logging only
     distribution_type : str
         Type of distribution ('lognormal', 'normal', 'beta', 'weibull', 'gamma', 'exponential')
     
     Returns:
     --------
-    dict : Status and results
-        - 'status': 'success' (class modeling OK) or 'fallback' (estimation used) or 'failed' (error)
-        - 'use_fallback': True if estimation was used
-        - 'result': Estimation result (dict) if fallback was triggered, None otherwise
+    dict : Decision and results
+        - 'status': 'fallback' (use estimation) or 'success' (use class modeling) or 'failed' (error)
+        - 'use_fallback': True if estimation is better, False if class modeling is better
+        - 'result': Estimation result (dict) if fallback is chosen, None otherwise
         - 'best_class_idx': Best class index from modeling (if not using fallback)
+        - 'fallback_mrd': MRD of fallback estimation
+        - 'best_class_mrd': MRD of best class from modeling
+        - 'distribution_type': Distribution type used
     """
+    import numpy as np
     
-    min_p1 = model_df['relat_diff_1%'].abs().min()
-    min_p50 = model_df['relat_diff_50%'].abs().min()
-    min_p99 = model_df['relat_diff_99%'].abs().min()
+
+    #Get best class modeling MRD
+    cap_selection_res_df =find_best_class_CapgeminiLogic(model_df) 
+    best_class_idx = cap_selection_res_df['bestClassIndexCapgemini']
+    best_class_mrd = model_df.loc[model_df['class_index'] == best_class_idx, 'Mean relat diff'].values[0]
+    # best_class_idx = model_df['Mean relat diff'].idxmin()
+    # best_class_mrd = model_df['Mean relat diff'].min()
     
-    best_class_idx = model_df['Mean relat diff'].idxmin()
-    min_mrd = model_df['Mean relat diff'].min()
+    print(f"📊 Best class modeling MRD: {best_class_mrd:.2f}% (class index: {best_class_idx})")
     
-    # Check if ALL three percentiles exceed threshold
-    if min_p1 > mrd_threshold and min_p50 > mrd_threshold and min_p99 > mrd_threshold:
-        # All percentiles exceed threshold - trigger fallback
-        print(f"⚠️ All modeled classes have MRD > {mrd_threshold}% for ALL percentiles")
-        print(f"   P1%: {min_p1:.2f}% | P50%: {min_p50:.2f}% | P99%: {min_p99:.2f}%")
-        print(f"🔄 Fallback activated: Using direct parameter estimation for {distribution_type}")
+    # Compute fallback estimation
+  
+    # print(f"🔄 Computing fallback estimation for {distribution_type}...")
+    
+    fallback_result = None
+    
+    if distribution_type == "lognormal":
+        fallback_result = lognormal_estimee(data, d)
         
-        fallback_result = None
+    elif distribution_type == "normal":
+        fallback_result = normal_estimee(data, d)
         
-        if distribution_type == "lognormal":
-            fallback_result = lognormal_estimee(data, d)
-            
-        elif distribution_type == "normal":
-            fallback_result = normal_estimee(data, d)
-            
-        elif distribution_type == "beta":
-            fallback_result = beta_estimee(data, d)
-            
-        elif distribution_type == "weibull":
-            fallback_result = weibull_estimee(data, d)
-            
-        elif distribution_type == "gamma":
-            fallback_result = gamma_estimee(data, d)
-            
-        elif distribution_type == "exponential":
-            fallback_result = exponential_estimee(data, d)
-            
-        else:
-            print(f"❌ Unknown distribution type: {distribution_type}")
-            return {
-                'status': 'failed',
-                'min_mrd': min_mrd,
-                'threshold': mrd_threshold,
-                'use_fallback': False,
-                'result': None,
-                'best_class_idx': best_class_idx,
-                'distribution_type': distribution_type
-            }
+    elif distribution_type == "beta":
+        fallback_result = beta_estimee(data, d)
         
-        # Check if estimation succeeded
-        if fallback_result is None:
-            print(f"❌ Fallback estimation failed for {distribution_type}")
-            return {
-                'status': 'failed',
-                'min_mrd': min_mrd,
-                'threshold': mrd_threshold,
-                'use_fallback': False,
-                'result': None,
-                'best_class_idx': best_class_idx,
-                'distribution_type': distribution_type
-            }
+    elif distribution_type == "weibull":
+        fallback_result = weibull_estimee(data, d)
         
-        print(f"✓ Estimation successful for {distribution_type}")
-        return {
-            'status': 'fallback',
-            'min_mrd': min_mrd,
-            'threshold': mrd_threshold,
-            'use_fallback': True,
-            'result': fallback_result,
-            'best_class_idx': None,
-            'distribution_type': distribution_type
-        }
+    elif distribution_type == "gamma":
+        fallback_result = gamma_estimee(data, d)
+        
+    elif distribution_type == "exponential":
+        fallback_result = exponential_estimee(data, d)
+        
     else:
-        # At least one percentile is acceptable - use class modeling
-        print(f"✓ Class modeling acceptable (at least one percentile within threshold)")
-        print(f"   P1%: {min_p1:.2f}% | P50%: {min_p50:.2f}% | P99%: {min_p99:.2f}%")
+        print(f"❌ Unknown distribution type: {distribution_type}")
         return {
-            'status': 'success',
-            'min_mrd': min_mrd,
+            'status': 'failed',
+            'min_mrd': best_class_mrd,
             'threshold': mrd_threshold,
             'use_fallback': False,
             'result': None,
             'best_class_idx': best_class_idx,
+            'fallback_mrd': None,
+            'best_class_mrd': best_class_mrd,
             'distribution_type': distribution_type
+        }
+    
+    # Check if estimation succeeded
+    if fallback_result is None:
+        print(f"❌ Fallback estimation failed for {distribution_type}")
+        print(f"Using class modeling (MRD: {best_class_mrd:.2f}%)")
+        return {
+            'status': 'success',
+            'min_mrd': best_class_mrd,
+            'threshold': mrd_threshold,
+            'use_fallback': False,
+            'result': None,
+            'best_class_idx': best_class_idx,
+            'fallback_mrd': None,
+            'best_class_mrd': best_class_mrd,
+            'distribution_type': distribution_type
+        }
+    
+    # Calculate MRD for fallback estimation
+
+    # Extract percentiles from fallback result
+    fallback_p1 = fallback_result['fitted_percentiles'][0]
+    fallback_p50 = fallback_result['fitted_percentiles'][1]
+    fallback_p99 = fallback_result['fitted_percentiles'][2]
+    
+    fallback_p1_emp = fallback_result['empirical_percentiles'][0]
+    fallback_p50_emp = fallback_result['empirical_percentiles'][1]
+    fallback_p99_emp = fallback_result['empirical_percentiles'][2]
+    
+    # Calculate relative differences for fallback
+    relat_diff_p1 = abs((fallback_p1 - fallback_p1_emp) / fallback_p1_emp * 100) if fallback_p1_emp != 0 else 0
+    relat_diff_p50 = abs((fallback_p50 - fallback_p50_emp) / fallback_p50_emp * 100) if fallback_p50_emp != 0 else 0
+    relat_diff_p99 = abs((fallback_p99 - fallback_p99_emp) / fallback_p99_emp * 100) if fallback_p99_emp != 0 else 0
+    
+    # Mean relative difference for fallback
+    fallback_mrd = np.mean([relat_diff_p1, relat_diff_p50, relat_diff_p99])
+    
+    print(f"📊 Fallback estimation MRD: {fallback_mrd:.2f}%")
+    print(f"   P1%: {relat_diff_p1:.2f}% | P50%: {relat_diff_p50:.2f}% | P99%: {relat_diff_p99:.2f}%")
+    
+    # Store MRD breakdown in fallback result for reference
+    fallback_result['Mean relat diff'] = fallback_mrd
+    fallback_result['relat_diff_1%'] = relat_diff_p1
+    fallback_result['relat_diff_50%'] = relat_diff_p50
+    fallback_result['relat_diff_99%'] = relat_diff_p99
+    
+    # ============================================================================
+    # STEP 4: Compare and decide
+    # ============================================================================
+    print(f"\n{'='*60}")
+    print(f" COMPARISON SUMMARY:")
+    print(f"   Best Class Modeling MRD: {best_class_mrd:.2f}%")
+    print(f"   Fallback Estimation MRD: {fallback_mrd:.2f}%")
+    print(f"{'='*60}")
+    
+    if fallback_mrd < best_class_mrd:
+        # Fallback is better
+        improvement = best_class_mrd - fallback_mrd
+        # print(f"✅ DECISION: Use FALLBACK estimation (better by {improvement:.2f}%)")
+        return {
+            'status': 'fallback',
+            'min_mrd': fallback_mrd,
+            'threshold': mrd_threshold,
+            'use_fallback': True,
+            'result': fallback_result,
+            'best_class_idx': None,
+            'fallback_mrd': fallback_mrd,
+            'best_class_mrd': best_class_mrd,
+            'distribution_type': distribution_type,
+            'improvement': improvement
+        }
+    else:
+        # Class modeling is better or equal
+        improvement = fallback_mrd - best_class_mrd
+        print(f"✅ DECISION: Use CLASS MODELING (better by {improvement:.2f}%)")
+        return {
+            'status': 'success',
+            'min_mrd': best_class_mrd,
+            'threshold': mrd_threshold,
+            'use_fallback': False,
+            'result': fallback_result,  # Keep for reference
+            'best_class_idx': best_class_idx,
+            'fallback_mrd': fallback_mrd,
+            'best_class_mrd': best_class_mrd,
+            'distribution_type': distribution_type,
+            'improvement': improvement
         }
 
 #integrate mrd_threshhold check in the classes computation 
@@ -1635,18 +1661,13 @@ def plot_exponential_streamlit(data, N_bins, i_class, lambda_inv, R2, perso_titl
 
 def find_best_class_CapgeminiLogic(model_df: pd.DataFrame) -> dict:        
     calc_df = model_df.copy()
-    print(f"find_best_class_CapgeminiLogic diag checpoint 1: model df copied, schema : {calc_df.info()}")
-    # FIT_P1 = 'percentile_1%'
-    # FIT_P50 = 'percentile_50%'
-    # FIT_P99 = 'percentile_99%'
     
     EMP_P1, EMP_P50, EMP_P99 = 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
     
-    print("find_best_class_CapgeminiLogic diag checpoint 1: sample percetiles and empirical percentiles abs differences are computed")
     calc_df['AbsDiff_P1'] = np.abs(calc_df['percentile_1%'] - calc_df[EMP_P1])
     calc_df['AbsDiff_P50'] = np.abs(calc_df['percentile_50%'] - calc_df[EMP_P50])
     calc_df['AbsDiff_P99'] = np.abs(calc_df['percentile_99%'] - calc_df[EMP_P99])
-    print("diag checpoint 1.2")
+    # print("diag checpoint 1.2")
     # Scénario 1: 1% et 50% (Critère de la queue inférieure)
     calc_df['SumDiff_1_50'] = calc_df['AbsDiff_P1'] + calc_df['AbsDiff_P50']
                 
@@ -1731,7 +1752,7 @@ def find_best_distribution(data):
     best_dist = results_df.iloc[0]["Distribution"]
     best_aic = results_df.iloc[0]["AIC"]
     
-    print(f"Based on AIC, the best fitting distribution is: {best_dist} (AIC: {best_aic:.2f})")
+    # print(f"Based on AIC, the best fitting distribution is: {best_dist} (AIC: {best_aic:.2f})")
     
     # Return the best distribution name and full results dataframe
     return best_dist, results_df
@@ -2049,141 +2070,269 @@ def plot_best_distribution2(study_name_folder, col_name, data, dist_name, result
     plt.show()
     plt.close()
 
-def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_classes, model_choice="auto", study_name=None):
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
+def detect_dimension_from_df(df):
+    """
+    Detect dimension from a DataFrame by checking classA, classB, classC columns
     
-    import numpy as np
+    Parameters:
+    -----------
+    df : DataFrame (Spark or Pandas)
+        DataFrame containing classA, classB, classC columns
+    
+    Returns:
+    --------
+    str : Dimension (H0D, H1D, H2D, or H3D)
+    
+    Raises:
+    -------
+    ValueError : If required columns are missing
+    """
+    from pyspark.sql import DataFrame as SparkDataFrame
     import pandas as pd
-    from tqdm import tqdm
+    
+    # Check if required columns exist
+    required_cols = ["classA", "classB", "classC"]
+    
+    if isinstance(df, SparkDataFrame):
+        df_cols = df.columns
+        if not all(col in df_cols for col in required_cols):
+            raise ValueError(f"DataFrame must contain columns: {required_cols}. Found: {df_cols}")
+        
+        # Get first non-null values for each class column
+        first_row = df.filter(
+            (df.classA.isNotNull()) | 
+            (df.classB.isNotNull()) | 
+            (df.classC.isNotNull())
+        ).first()
+        
+        if first_row is None:
+            # All columns are null - default to H0D
+            return "H0D"
+        
+        classA = first_row.classA if hasattr(first_row, 'classA') else None
+        classB = first_row.classB if hasattr(first_row, 'classB') else None
+        classC = first_row.classC if hasattr(first_row, 'classC') else None
+        
+    elif isinstance(df, pd.DataFrame):
+        if not all(col in df.columns for col in required_cols):
+            raise ValueError(f"DataFrame must contain columns: {required_cols}. Found: {list(df.columns)}")
+        
+        # Get first non-null row
+        non_null_rows = df.dropna(subset=required_cols, how='all')
+        
+        if len(non_null_rows) == 0:
+            # All columns are null - default to H0D
+            return "H0D"
+        
+        first_row = non_null_rows.iloc[0]
+        classA = first_row['classA']
+        classB = first_row['classB']
+        classC = first_row['classC']
+    
+    else:
+        raise TypeError("DataFrame must be either Spark DataFrame or Pandas DataFrame")
+    
+    # Use the original detect_dimension logic
+    return detect_dimension(classA, classB, classC)
+
+def detect_dimension(classA, classB, classC):
+    """
+    Detect dimension based on which classes are not 'none'
+    
+    Parameters:
+    -----------
+    classA, classB, classC : str or None
+        Class values to check
+    
+    Returns:
+    --------
+    str : Dimension (H0D, H1D, H2D, or H3D)
+    """
+    classA_filled = str(classA).lower() not in ["none", "", "null"] and classA is not None
+    classB_filled = str(classB).lower() not in ["none", "", "null"] and classB is not None
+    classC_filled = str(classC).lower() not in ["none", "", "null"] and classC is not None
+    
+    if classA_filled and classB_filled and classC_filled:
+        return "H3D"
+    elif classA_filled and classB_filled:
+        return "H2D"
+    elif classA_filled:
+        return "H1D"
+    else:
+        return "H0D"
+
+#modeling function with handle of min sample size, best class selection like cap method and loi estimees fallback when all classes mrd are above threshhold + dimensions check 
+def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_classes, model_choice="auto", study_name=None):
+
+    import pandas as pd
+    import numpy as np
     from scipy import stats
     from datetime import datetime
     import os
-
-    # Create study folder
+    from pyspark.sql import SparkSession
+    
+    spark = SparkSession.builder.getOrCreate()
+    
     today_str = datetime.today().strftime('%Y-%m-%d')
-
+    
     if study_name is None or study_name.strip() == "":
         study_name_folder = today_str
     else:
         study_name_folder = f"{study_name}_{today_str}"
-
+    
+    # --- Local folder ---
     local_output_folder = os.path.join(os.getcwd(), "Modeling Results", study_name_folder)
     os.makedirs(local_output_folder, exist_ok=True)
-
+    
+    # --- DBFS folder ---
     dbfs_base_path = "/Volumes/dafe_dev/customer_knowledge_utils/modeling_results"
     dbfs_output_folder = os.path.join(dbfs_base_path, study_name_folder)
     os.makedirs(dbfs_output_folder, exist_ok=True)
-
+    
     print(f"Plots and outputs will be saved in:\nLocal: {local_output_folder}\nDBFS: {dbfs_output_folder}")
-
-    global data
-
+    
+    global data  
+    
     all_results = {}
     nb_c = max_nbr_classes
-    mrd_threshold = 0.1
+    d = 0
+    mrd_threshold = 10  # 10%
+    min_data_threshold = 30  # Minimum data points required for modeling
+    
+
+    # MAIN LOOP
 
     for col_name in list_of_normalized_column_to_model:
+        print(f"\n{'='*80}")
         print(f"Processing column: {col_name}")
-
-        local_data = df_to_model.filter(f"{col_name} > 0").select(col_name).rdd.flatMap(lambda x: x).collect()
-        local_data = [x for x in local_data if x is not None]
-
+        print(f"{'='*80}")
+        
+        local_data = df_to_model.filter(F.col(col_name) > 0).select(col_name).rdd.flatMap(lambda x: x).collect()
+        local_data = [x for x in local_data if x is not None]  # filter nulls
+        
         if len(local_data) == 0:
-            print(f"Skipping {col_name}: empty or null column")
+            print(f"⚠️  Skipping {col_name}: empty or null column")
             continue
-
+        
         data = local_data
         N_data = len(data)
         data_min, data_max = np.min(data), np.max(data)
         data_mean = np.mean(data)
         
-        # ========================================
-        # CHECK SAMPLE SIZE - NEW FEATURE
-        # ========================================
-        if N_data < 30:
-            print(f"⚠️ Sample size ({N_data}) < 30 - No modeling performed, using empirical percentiles only")
+        print(f"📊 Data summary: N={N_data}, min={data_min:.4f}, max={data_max:.4f}, mean={data_mean:.4f}")
+        
+        try:
+            # Get subset of df_to_model with non-null values for this criterion
+            df_criterion = df_to_model.filter(F.col(col_name).isNotNull() & (F.col(col_name) > 0))
+            dimension = detect_dimension_from_df(df_criterion)
+            print(f"📊 Criteria dimension for {col_name}: {dimension}")
+        except Exception as e:
+            print(f"⚠️  Error detecting dimension for {col_name}: {e}")
+            print(f"⚠️  Assuming H0D")
+            dimension = "H0D"
+        
+
+        if dimension != "H0D":
+            print(f"⚠️  Column {col_name} has dimension {dimension} - only H0D can be modeled")
+            print(f"⚠️  Returning empty structure for this criterion")
             
-            # Calculate empirical percentiles
+            all_results[col_name] = {
+                'data': data,
+                'best_dist': None,
+                'PDF_selection_results': pd.DataFrame(),
+                'best_mrd_class': None,
+                'df_classes_modeling_results_best_classe': pd.DataFrame({
+                    'criteria': [col_name],
+                    'data_min': [data_min],
+                    'data_max': [data_max],
+                    'data_mean': [data_mean],
+                    'loi': [None],
+                    'class_index': [None],
+                    'R2': [None],
+                    'percentile_1%': [None],
+                    'percentile_50%': [None],
+                    'percentile_99%': [None],
+                    'percentile_1%_emp': [None],
+                    'percentile_50%_emp': [None],
+                    'percentile_99%_emp': [None]
+                }),
+                'summary_df': pd.DataFrame(),
+                'fallback_info': {
+                    'status': 'non_H0D',
+                    'dimension': dimension
+                }
+            }
+            
+            print(f"END OF Processing column: {col_name} (non-H0D) ##################################################################")
+            continue  
+        
+        if N_data < min_data_threshold:
+            print(f"⚠️  Column data length for {col_name}: {N_data} rows < {min_data_threshold} threshold")
+            print(f"Using sample percentiles directly (no PDF modeling)")
+            
             p1_emp = np.percentile(data, 1)
             p50_emp = np.percentile(data, 50)
             p99_emp = np.percentile(data, 99)
             
-            # Create non-modelable result
-            non_modelable_dict = {
+            df_classes_modeling_results_best_classe = pd.DataFrame([{
                 'criteria': col_name,
                 'data_min': data_min,
                 'data_max': data_max,
                 'data_mean': data_mean,
-                'loi': 'Non modelisable',
-                'class_index': 'N/A',
-                'R2': np.nan,
-                'percentile_1%': p1_emp,  # PDF percentiles = empirical percentiles
+                'loi': 'Sample percentiles-non modelisable',
+                'class_index': None,
+                'R2': None,
+                'percentile_1%': p1_emp,
                 'percentile_50%': p50_emp,
                 'percentile_99%': p99_emp,
                 'percentile_1%_emp': p1_emp,
                 'percentile_50%_emp': p50_emp,
-                'percentile_99%_emp': p99_emp,
-                'MSE': np.nan,
-                'Mean relat diff': 0.0,  # Perfect match since they're identical
-                'relat_diff_1%': 0.0,
-                'relat_diff_50%': 0.0,
-                'relat_diff_99%': 0.0,
-                'sample_size': N_data
-            }
+                'percentile_99%_emp': p99_emp
+            }])
             
-            df_result = pd.DataFrame([non_modelable_dict])
-            
-            # Plot with non-modelable flag
-            try:
-                plot_best_distribution2(
-                    study_name_folder, col_name, data, 'Non modelisable', 
-                    None,  # No PDF results
-                    None,  # No class
-                    df_result, 
-                    fallback_used=False,
-                    non_modelable=True
-                )
-            except Exception as e:
-                print(f"Error in displaying plots for column {col_name}: {e}")
+            print(f"   P1%: {p1_emp:.4f} | P50%: {p50_emp:.4f} | P99%: {p99_emp:.4f}")
+            display(df_classes_modeling_results_best_classe)
             
             all_results[col_name] = {
                 'data': data,
-                'best_dist': 'Non modelisable',
-                'PDF_selection_results': None,
+                'best_dist': 'Sample percentiles-non modelisable',
+                'PDF_selection_results': pd.DataFrame(),
                 'best_mrd_class': None,
-                # 'fallback_used': False,
-                # 'non_modelable': True,
-                # 'sample_size': N_data,
-                'df_classes_modeling_results_best_classe': df_result,
-                'summary_df': df_result,
+                'df_classes_modeling_results_best_classe': df_classes_modeling_results_best_classe,
+                'summary_df': pd.DataFrame(),
+                'fallback_info': {
+                    'status': 'insufficient_data',
+                    'use_fallback': True,
+                    'data_count': N_data,
+                    'threshold': min_data_threshold
+                }
             }
             
-            print(f"END OF Processing column: {col_name} (Non modelisable) ##################################################################")
+            print(f"END OF Processing column: {col_name} (empirical only) ##################################################################")
             continue
         
-        # ========================================
-        # NORMAL MODELING FLOW (sample size >= 30)
-        # ========================================
-        best_dist_name, results_df = find_best_distribution(data)
 
+        print(f" Proceeding with PDF modeling (H0D, N={N_data} >= {min_data_threshold})")
+        
+        best_dist_name, results_df = find_best_distribution(data)
+        
         # Distribution selection
         if model_choice == "auto":
             print("Finding best distribution fit...")
             PDF_selection_results = results_df
             best_dist_info = results_df[results_df['Distribution'] == best_dist_name].iloc[0].to_dict()
-            display(f"The modeling is being performed using this PDF: {best_dist_name}")
+            print(f"The modeling is being performed using: {best_dist_name} PDF")
         else:
             best_dist_name = model_choice
-            display(f"Using user-specified distribution: {best_dist_name}")
+            print(f"Using user-specified distribution: {best_dist_name}")
             PDF_selection_results = results_df
             best_dist_info = {"Distribution": best_dist_name}
+        
+        # Class modeling loop
 
-        # Modeling loop over classes
         rows = []
-        print(f"Performing class modeling for {best_dist_name} distribution...")
-        progress_bar = tqdm(range(2, nb_c + 1), desc="Modeling Progress", unit="class")
-
+        progress_bar = range(2, nb_c + 1)
+        
         if best_dist_name == "lognormal":
             for i_class in progress_bar:
                 result = lognormal_class_stats(i_class, data)
@@ -2202,7 +2351,7 @@ def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_c
                 'percentile_1%', 'percentile_50%', 'percentile_99%',
                 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
             ]
-
+        
         elif best_dist_name == "normal":
             for i_class in progress_bar:
                 result = normal_class_stats(i_class, data)
@@ -2221,7 +2370,7 @@ def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_c
                 'percentile_1%', 'percentile_50%', 'percentile_99%',
                 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
             ]
-
+        
         elif best_dist_name == "beta":
             for i_class in progress_bar:
                 result = beta_class_stats(i_class, data)
@@ -2240,7 +2389,7 @@ def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_c
                 'percentile_1%', 'percentile_50%', 'percentile_99%',
                 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
             ]
-
+        
         elif best_dist_name == "gamma":
             for i_class in progress_bar:
                 result = gamma_class_stats(i_class, data)
@@ -2259,7 +2408,7 @@ def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_c
                 'percentile_1%', 'percentile_50%', 'percentile_99%',
                 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
             ]
-
+        
         elif best_dist_name == "weibull":
             for i_class in progress_bar:
                 result = weibull_class_stats(i_class, data)
@@ -2274,11 +2423,11 @@ def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_c
                     'relat_diff_99%': result['relative_diff'][2]
                 })
             columns_to_select = [
-                'criteria', 'data_min', 'data_max','data_mean', 'loi', 'class_index', 'beta_shape', 'lambda_scale', 'R2',
+                'criteria', 'data_min', 'data_max', 'data_mean', 'loi', 'class_index', 'beta_shape', 'lambda_scale', 'R2',
                 'percentile_1%', 'percentile_50%', 'percentile_99%',
                 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
             ]
-
+        
         elif best_dist_name == "exponential":
             for i_class in progress_bar:
                 result = exponential_class_stats(i_class, data)
@@ -2297,14 +2446,14 @@ def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_c
                 'percentile_1%', 'percentile_50%', 'percentile_99%',
                 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
             ]
-
+        
         else:
             print(f"Warning: Distribution '{best_dist_name}' not supported. Using lognormal instead.")
             for i_class in progress_bar:
                 result = lognormal_class_stats(i_class, data)
                 rows.append({
-                    'criteria': col_name, 'data_min': data_min, 'data_max': data_max,  'data_mean': data_mean, 'loi': "lognormal",
-                    'class_index': i_class, 'param1': result['slnx'], 'mulnx': result['mulnx'], 'R2': result['R2'],
+                    'criteria': col_name, 'data_min': data_min, 'data_max': data_max, 'data_mean': data_mean, 'loi': "lognormal",
+                    'class_index': i_class, 'slnx': result['slnx'], 'mulnx': result['mulnx'], 'R2': result['R2'],
                     'percentile_1%': result['fitted_percentiles'][0], 'percentile_50%': result['fitted_percentiles'][1],
                     'percentile_99%': result['fitted_percentiles'][2], 'percentile_1%_emp': result['empirical_percentiles'][0],
                     'percentile_50%_emp': result['empirical_percentiles'][1], 'percentile_99%_emp': result['empirical_percentiles'][2],
@@ -2312,136 +2461,101 @@ def modeling_function(df_to_model, list_of_normalized_column_to_model, max_nbr_c
                     'relat_diff_1%': result['relative_diff'][0], 'relat_diff_50%': result['relative_diff'][1],
                     'relat_diff_99%': result['relative_diff'][2]
                 })
-            
             columns_to_select = [
                 'criteria', 'data_min', 'data_max', 'data_mean', 'loi', 'class_index', 'slnx', 'mulnx', 'R2',
                 'percentile_1%', 'percentile_50%', 'percentile_99%',
                 'percentile_1%_emp', 'percentile_50%_emp', 'percentile_99%_emp'
             ]
-            
-        # Results aggregation
+        
+        # STEP 7: assemble results and check fallback
+
         summary_df = pd.DataFrame(rows)
-        df_classes = summary_df.iloc[3:] if len(summary_df) > 3 else summary_df
+        df = summary_df.iloc[3:] if len(summary_df) > 3 else summary_df
+        
+        fallback_df = check_mrd_threshold_and_fallback_PDF(df, data, d, mrd_threshold, distribution_type=best_dist_name)
+        
 
-        display(df_classes)
+        #Apply fallback or use class modeling
 
-        results_best_class = find_best_class_CapgeminiLogic(df_classes)
-        best_class_idx = results_best_class['index_best_1_50_99']
-        
-        fallback_result = check_mrd_threshold_and_fallback(
-            model_df=df_classes,
-            data=data,
-            d=None,
-            mrd_threshold=mrd_threshold,
-            distribution_type=best_dist_name
-        )
-        
-        print(f"Fallback status: {fallback_result['status']}")
-        print(f"Use fallback: {fallback_result['use_fallback']}")
-        
-        if fallback_result['use_fallback']:
-            print(f"⚠️ Fallback activated - using direct parameter estimation")
-            fallback_dict = fallback_result['result']
+        if fallback_df['use_fallback']:
+            print(f"✅ Using fallback: Estimated distribution (loi {best_dist_name} estimée)")
             
-            # Transform fallback result to match class-based structure
-            if isinstance(fallback_dict, dict):
-                # Extract percentiles from lists
-                fitted_percentiles = fallback_dict.get('fitted_percentiles', [np.nan, np.nan, np.nan])
-                empirical_percentiles = fallback_dict.get('empirical_percentiles', [np.nan, np.nan, np.nan])
-                relative_diff = fallback_dict.get('relative_diff', [np.nan, np.nan, np.nan])
-                
-                # Build new dict with proper column structure
-                transformed_dict = {
-                    'criteria': col_name,
-                    'data_min': data_min,
-                    'data_max': data_max,
-                    'data_mean': data_mean,
-                    'loi': best_dist_name,
-                    'class_index': 'Estimation',
-                    'R2': fallback_dict.get('R2', np.nan),
-                    'percentile_1%': fitted_percentiles[0],
-                    'percentile_50%': fitted_percentiles[1],
-                    'percentile_99%': fitted_percentiles[2],
-                    'percentile_1%_emp': empirical_percentiles[0],
-                    'percentile_50%_emp': empirical_percentiles[1],
-                    'percentile_99%_emp': empirical_percentiles[2],
-                    'MSE': fallback_dict.get('MSE', np.nan),
-                    'Mean relat diff': fallback_dict.get('Mean relat diff', np.nan),
-                    'relat_diff_1%': relative_diff[0],
-                    'relat_diff_50%': relative_diff[1],
-                    'relat_diff_99%': relative_diff[2]
-                }
-                
-                # Add distribution-specific parameters
-                if best_dist_name == "lognormal":
-                    transformed_dict['slnx'] = fallback_dict.get('slnx', np.nan)
-                    transformed_dict['mulnx'] = fallback_dict.get('mulnx', np.nan)
-                elif best_dist_name == "normal":
-                    transformed_dict['mu'] = fallback_dict.get('mu', np.nan)
-                    transformed_dict['sigma'] = fallback_dict.get('sigma', np.nan)
-                elif best_dist_name == "beta":
-                    transformed_dict['alpha'] = fallback_dict.get('alpha', np.nan)
-                    transformed_dict['beta'] = fallback_dict.get('beta', np.nan)
-                elif best_dist_name == "gamma":
-                    transformed_dict['k_shape'] = fallback_dict.get('k_shape', np.nan)
-                    transformed_dict['theta_scale'] = fallback_dict.get('theta_scale', np.nan)
-                elif best_dist_name == "weibull":
-                    transformed_dict['beta_shape'] = fallback_dict.get('beta_shape', np.nan)
-                    transformed_dict['lambda_scale'] = fallback_dict.get('lambda_scale', np.nan)
-                elif best_dist_name == "exponential":
-                    transformed_dict['lambda_inv'] = fallback_dict.get('lambda_inv', np.nan)
-                
-                df_classes_final = pd.DataFrame([transformed_dict])
-            else:
-                df_classes_final = fallback_dict
-            
+            fallback_result = fallback_df['result']
+            best_dist_name = fallback_df['distribution_type']
             best_mrd_class = None
-            fallback_used = True
-        else:
-            print(f"✓ Using class-based modeling")
-            df_classes_final = df_classes
-            best_mrd_class = best_class_idx
-            fallback_used = False
+            
+            df_classes_modeling_results_best_classe = pd.DataFrame([{
+                'criteria': col_name,
+                'data_min': data_min,
+                'data_max': data_max,
+                'data_mean': data_mean,
+                'loi': best_dist_name,
+                'class_index': None,
+                'R2': fallback_result.get('R2', None),
+                'percentile_1%': fallback_result['fitted_percentiles'][0],
+                'percentile_50%': fallback_result['fitted_percentiles'][1],
+                'percentile_99%': fallback_result['fitted_percentiles'][2],
+                'percentile_1%_emp': fallback_result['empirical_percentiles'][0],
+                'percentile_50%_emp': fallback_result['empirical_percentiles'][1],
+                'percentile_99%_emp': fallback_result['empirical_percentiles'][2]
+            }])
+            
+            # Add distribution-specific parameters
+            if best_dist_name == "lognormal":
+                df_classes_modeling_results_best_classe['slnx'] = fallback_result.get('slnx')
+                df_classes_modeling_results_best_classe['mulnx'] = fallback_result.get('mulnx')
+            elif best_dist_name == "normal":
+                df_classes_modeling_results_best_classe['mu'] = fallback_result.get('mu')
+                df_classes_modeling_results_best_classe['sigma'] = fallback_result.get('sigma')
+            elif best_dist_name == "gamma":
+                df_classes_modeling_results_best_classe['k_shape'] = fallback_result.get('k_shape')
+                df_classes_modeling_results_best_classe['theta_scale'] = fallback_result.get('theta_scale')
+            elif best_dist_name == "weibull":
+                df_classes_modeling_results_best_classe['beta_shape'] = fallback_result.get('beta_shape')
+                df_classes_modeling_results_best_classe['lambda_scale'] = fallback_result.get('lambda_scale')
+            elif best_dist_name == "exponential":
+                df_classes_modeling_results_best_classe['lambda_inv'] = fallback_result.get('lambda_inv')
+            elif best_dist_name == "beta":
+                df_classes_modeling_results_best_classe['alpha'] = fallback_result.get('alpha')
+                df_classes_modeling_results_best_classe['beta'] = fallback_result.get('beta')
+            
+            display(df_classes_modeling_results_best_classe)
         
-        # Select best class row
-        if fallback_used:
-            best_class_row = df_classes_final.iloc[0]
         else:
-            best_class_row = df_classes_final[df_classes_final['class_index'] == best_mrd_class].iloc[0]
+            print("✅ Using class modeling results")
+            display(df)
+            
+            # Use Capgemini logic for best class selection
+            cap_best_class = find_best_class_CapgeminiLogic(df)
+            best_mrd_class = cap_best_class['bestClassIndexCapgemini']
+            best_class_row = df[df['class_index'] == best_mrd_class].iloc[0]
+            df_classes_modeling_results_best_classe = df[df['class_index'] == best_mrd_class][columns_to_select]
+            
+            R2 = best_class_row['R2']
+            print(f"📊 Best class: {best_mrd_class}, from a table of {len(df)} classes")
+            display(df_classes_modeling_results_best_classe)
         
-        df_classes_modeling_results_best_classe = df_classes_final[columns_to_select] if not fallback_used else df_classes_final
 
-        R2 = best_class_row['R2']
-        display(f"Best class: {best_mrd_class if not fallback_used else 'Fallback (direct estimation)'}")
-        display(df_classes_modeling_results_best_classe)
-
-        # Plot
         try:
-            plot_best_distribution2(study_name_folder, col_name, data, best_dist_name, PDF_selection_results, best_mrd_class, df_classes_final, fallback_used=fallback_used, non_modelable=False)
+            plot_best_distribution2(study_name_folder, col_name, data, best_dist_name, PDF_selection_results, best_mrd_class, df)
         except Exception as e:
             print(f"Error in displaying plots for column {col_name}: {e}")
-
-        graphs = {}
+        
 
         all_results[col_name] = {
             'data': data,
             'best_dist': best_dist_name,
             'PDF_selection_results': PDF_selection_results,
             'best_mrd_class': best_mrd_class,
-            # 'fallback_used': fallback_used,
-            # 'non_modelable': False,
-            # 'sample_size': N_data,
             'df_classes_modeling_results_best_classe': df_classes_modeling_results_best_classe,
-            'summary_df': df_classes_final,
+            'summary_df': df,
+            'fallback_info': fallback_df
         }
-
+        
         print(f"END OF Processing column: {col_name} ##################################################################")
-
+    
     return all_results
 
-import pandas as pd
-import json
-from pyspark.sql import SparkSession
 
 def aggregate_modeling_results(results, list_of_columns, study, sample_description):
     aggregated_df = []
