@@ -1,0 +1,1562 @@
+import pandas as pd
+
+
+#FORM NB
+def periodesRoulagesEPS (eps):
+    ############# PERIODES OU IL Y A "1"  #############
+    switchS,switchE,=False,False
+    start,end = "",""
+    couple = []
+
+    for c in range(len(eps)):
+        if eps["ETAT_PRINCIP_SEV"][c] == 1.0 and not switchS and not switchE  :
+            switchS = True
+            start= eps["TIMESTAMP"][c]
+        elif eps["ETAT_PRINCIP_SEV"][c] == 1.0 and switchS   :
+            switchE = True
+            end= eps["TIMESTAMP"][c]
+        elif eps["ETAT_PRINCIP_SEV"][c] == 0.0 and switchS and switchE  :
+            couple.append([start,end,end-start])
+            switchS,switchE=False,False
+            start,end = "",""
+    eps_10 = pd.DataFrame(couple, columns = ["start","end","duree"])
+    
+    return eps_10
+
+
+def savePandas2sig(dfT,FICHIER_LOG,sig,signaux_trouves,ligne,roulage):
+    conducteur,pret,cpg,vis = ligne.split(";")[0],ligne.split(";")[1],ligne.split(";")[2],ligne.split(";")[3]
+    run = ligne.split(";")[4]
+    trame = "%03X"%(int(signaux_trouves["nom"].split(":")[2]))
+    chantitle = "CAN@"+signaux_trouves['reseau']+"@"+trame+"@"+signaux_trouves['channel']
+    md = {"colonne":sig,"Chantitle":chantitle,"Frequence":signaux_trouves["freq"],"unite":signaux_trouves["unite"]}
+    url = os.getcwd()+"/Archive/"+cpg+"_"+vis+"_"+conducteur+"_"+pret+".ess/"+run+"_"+roulage+".mas"
+
+    if not os.path.exists(url): 
+        os.makedirs(url)             
+    try :
+        Lexade.pandas2sig(dfT,url,md)
+    except Exception as inst: 
+        with open(FICHIER_LOG,'a') as log:
+            log.write(str(datetime.now())+" - ERREUR : ECHEC Lexade.pandas2sig "+sig+"\n")
+            log.write(str(type(inst)))    # the exception instance
+            log.write(str(inst.args) )    # arguments stored in .args
+            log.write(str(inst))        # __str__ allows args to be printed directly,
+
+def saveMainSignaux(dfT,freq,sig):
+    dfT.to_csv(os.getcwd()+"/TEMP/original_"+sig+".csv", index = False, header=True, encoding='utf-8',sep=";")
+    if sig in ("ETAT_PRINCIP_SEV"):
+        dfT.to_csv(os.getcwd()+"/TEMP/original_"+sig+"2.csv", index = False, header=True, encoding='utf-8',sep=";")
+    auxFreq = pd.DataFrame([[sig,freq]], columns=["Signal","Frequence"])   
+   
+    if not "frequences.csv" in os.listdir(os.getcwd()+"/TEMP"):
+        auxFreq.to_csv(os.getcwd()+"/TEMP/frequences.csv", index = False, header=True, encoding='utf-8',sep=";")
+        
+    else:
+        frequences = pd.read_csv(os.getcwd()+"/TEMP/frequences.csv",sep=";", engine="python",encoding="ISO-8859-1")
+        frequences = pd.concat([frequences, auxFreq]).reset_index(drop=True)
+        frequences.to_csv(os.getcwd()+"/TEMP/frequences.csv", index = False, header=True, encoding='utf-8',sep=";")
+            
+    
+def imprimerStatKPIs(signaux_trouves,FICHIER_JOURNAL,FICHIER_LOG,url,temp0,journal,roulage,RUN,describe):
+
+    
+    try :
+        statistique = pd.DataFrame(describe, columns=["ROULAGE","ID_CONDUCTEUR","ID_PRET","CAMPAGNE","VIS","RUN","SIGNAL","DUREE","COUNT","MEAN","STD","MIN","MAX","FIRST","LAST","P1","P10","P25","P50","P75","P90","P99","Per0","Per1","Per2","Per3","distanceOdometre","tempsKMcorrige","perKMcorrige","vitMAX","vitFirst","vitLast","tempsVVCorrige","periodesVVCorrige","distribuDistanceVitesse","distribuTempsVitesse","PV_EPS_OK","PV_EPS_pos_nok","dureeRoulage_","vitesseMoyenneRoulage","tempsVILVCorrige","periodesVILVCorrige","ARV_Distance_kmA","ARV_Distance_kmR","ARV_Distance_kmV","ARV_Time_hA","ARV_Tme_hR","ARV_Time_hV"])
+
+        statistique.to_csv(url+"/KPI_HoroDat_channel_"+RUN+"_"+roulage+".csv", index = False, header=True, encoding='utf-8',sep=";")    
+      
+    except : 
+        with open(FICHIER_LOG,'a') as log:
+            log.write(str(datetime.now())+" - ERREUR : ECHEC KPI_HoroDat_channel_"+RUN+"_"+roulage+".csv \n")
+
+    #try :                        
+    #    metadonneRoulage.to_csv(url+"/TRAJET.csv", index = False, header=True, encoding='utf-8',sep=";")   
+    #except : 
+    #    with open(FICHIER_LOG,'a') as log:
+    #        log.write(str(datetime.now())+" - ERREUR : ECHEC metadonneRoulage.to_json "+sig+"\n")
+
+    #try :
+    #    newURL = url.split("/"+run+"_"+roulage)[0]
+        #url = os.getcwd()+"/Archive/"+cpg+"_"+vis+"_"+conducteur+"_"+pret+".ess/"+run+"_"+roulage+".mas"
+        #with open(newURL+"/signaux_trouves.json","w") as json:
+        #    json.write(str(signaux_trouves).replace("\'","\""))
+    #    signaux_trouves.to_csv(newURL+"/signaux_trouves.csv", index = False, header=True, encoding='utf-8',sep=";")  
+    #except : 
+    #    with open(FICHIER_LOG,'a') as log:
+    #        log.write(str(datetime.now())+" - ERREUR : ECHEC signaux_trouves json.dump "+sig+"\n")
+   
+    OK = False
+    for v in signaux_trouves:
+        if signaux_trouves[v]:                        
+            if signaux_trouves[v]["erreur"] == "non":
+                OK = True
+
+    if os.path.exists(url.split(".ess")[0]+".ess") :  
+            
+        with zipfile.ZipFile(url.split(".ess")[0]+".ess.zip","w") as fzip:
+            for mas in os.listdir(url.split(".ess")[0]+".ess") :
+                if os.path.isdir(url.split(".ess")[0]+".ess"+"/"+mas) :
+                    for sig in os.listdir(url.split(".ess")[0]+".ess"+"/"+mas) :
+                        fzip.write(url.split(".ess")[0]+".ess"+"/"+mas+"/"+sig,arcname=mas+"/"+sig)
+    if  OK:                  
+        journal[RUN] = datetime.now() - temp0 ### On sauvegarde le temps de execution
+        with open(FICHIER_JOURNAL,"w") as jrl:
+            jrl.write(str(journal))
+
+def merge_parquets(df):
+    list_lifetime_cycles = list(df[ID].unique())
+
+    folder_path = volume_data
+    
+    def join_dfs(dfs: list) :
+        def join_and_handle_duplicates(df1, df2) :
+            common_columns = set(df1.columns).intersection(df2.columns) - {TCID_RUNID, ID, TIMESTAMP, TEMPS}
+            for col in common_columns:
+                df2 = df2.drop(col)
+            return df1.join(df2, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+        return reduce(join_and_handle_duplicates, dfs)
+    def read_parquet(file_path: str) :
+        return spark.read.parquet(file_path)
+    
+    # Process each lifetime cycle in bulk
+    for lifetimecycle in list_lifetime_cycles:
+        # Get matching files for the current lifetime cycle
+        matching_files = [
+            os.path.join(folder_path, file_name)
+            for file_name in os.listdir(folder_path)
+            if file_name.endswith('.parquet') and f"{lifetimecycle}_" in file_name
+        ]
+        
+        if not matching_files:
+            continue
+        # Read all matching files at once
+        with ThreadPoolExecutor() as executor:
+            dfs = list(executor.map(read_parquet, matching_files))  
+        
+        # Join all dataframes in one go using reduce
+        merged_df = join_dfs(dfs)
+        merged_output_path = os.path.join(folder_path, f"{lifetimecycle}.parquet")
+        
+        if os.path.exists(merged_output_path):
+            parquet_df = spark.read.parquet(merged_output_path)
+
+            if overwrite_mode:
+                columns_to_drop = [col for col in parquet_df.columns if col not in [TCID_RUNID, ID, TIMESTAMP, TEMPS] and col in merged_df.columns]
+                parquet_df = parquet_df.drop(*columns_to_drop)
+                merged_df = merged_df.join(parquet_df, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+            else:
+                columns_to_drop = [col for col in merged_df.columns if col not in [TCID_RUNID, ID, TIMESTAMP, TEMPS] and col in parquet_df.columns]
+                merged_df = merged_df.drop(*columns_to_drop)
+                merged_df = parquet_df.join(merged_df, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+        
+        merged_df.write.mode("overwrite").parquet(merged_output_path)
+        # Delete the original Parquet files
+        for file_path in matching_files:
+            os.remove(file_path)
+
+    print("Parquet merging completed.")
+
+def join_dfs(dfs: list) :
+        def join_and_handle_duplicates(df1, df2) :
+            common_columns = set(df1.columns).intersection(df2.columns) - {TCID_RUNID, ID, TIMESTAMP, TEMPS}
+            for col in common_columns:
+                df2 = df2.drop(col)
+            return df1.join(df2, on=[TCID_RUNID, ID, TIMESTAMP, TEMPS], how="left")
+        return reduce(join_and_handle_duplicates, dfs)
+        
+def read_parquet(file_path: str) :
+    return spark.read.parquet(file_path)
+
+def load_parquet_files(volume, t_r, keys):
+    parquet_files = [
+        entry.path for entry in os.scandir(volume) 
+        if entry.name.endswith('.parquet') and t_r in entry.name
+    ]
+    
+    if not parquet_files:
+        return None
+    
+    df_list = [spark.read.parquet(file) for file in parquet_files]
+    df = df_list[0]
+
+    for i in range(1, len(df_list)):
+        df = df.unionByName(df_list[i], allowMissingColumns=True)
+
+    df = df.withColumns({'Loan_Conducteur_ID': F.lit(Loan_Conducteur_ID), 'VIN': F.lit(VIN)})
+    return df.select(*keys, *sorted([col for col in df.columns if col not in keys]))
+
+def write_results(tcid, runid):
+    t_r = f"{tcid}_{runid}"
+    keys_data = ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID, TIMESTAMP, TEMPS]
+    keys_meta = ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID, "signal"]
+    keys_info = ["Loan_Conducteur_ID", "VIN", TCID_RUNID, "Channels_name"]
+
+    # Load dataframes with constant columns and reorder inside load_parquet_files
+    df_final_data = load_parquet_files(volume_data, t_r, keys_data)
+    df_final_meta = load_parquet_files(volume_meta, t_r, keys_meta)
+    df_final_info = load_parquet_files(volume_info, t_r, keys_info)
+
+
+    if df_final_data is not None:
+        
+        if spark.catalog.tableExists(timeseries_table):
+            df_timeseries = spark.table(timeseries_table).filter(f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" and {TCID_RUNID} = "{t_r}"')
+
+            if not df_timeseries.isEmpty():
+                list_col_left = df_final_data.columns
+                list_col_right = df_timeseries.columns
+
+                if overwrite_mode:
+                    #keep all in left and only the missing in right
+                    col_toKeep_in_right = keys_data + [c for c in list_col_right if c not in list_col_left]
+                    df_final_data = df_final_data.join(df_timeseries.select(*col_toKeep_in_right), on=keys_data, how="outer")
+                else:
+                    #keep all in right and only the missing in left
+                    col_toKeep_in_left = keys_data + [c for c in list_col_left if c not in list_col_right]
+                    df_final_data = df_timeseries.join(df_final_data.select(*col_toKeep_in_left), on=keys_data, how="outer")
+ 
+        df_final_data = df_final_data.select(*(F.col(c).cast("double") if ":" in c else F.col(c) for c in df_final_data.columns))
+        write_delta(df_final_data, timeseries_table, t_r, ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID])
+
+    if df_final_meta is not None:
+        if spark.catalog.tableExists(metadata_table):
+            df_metadata = spark.table(metadata_table).filter(f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" and tcid_runid = "{t_r}"')
+            if not df_metadata.isEmpty():
+
+                rank_final, rank_metadata = (1, 2) if overwrite_mode else (2, 1)
+                df_final_meta = df_final_meta.withColumn("rank", F.lit(rank_final))
+                df_metadata = df_metadata.withColumn("rank", F.lit(rank_metadata))
+                
+                union_df = df_final_meta.unionByName(df_metadata)
+                    
+                window_spec = W.Window.partitionBy(*keys_meta).orderBy("rank")
+                df_final_meta = (
+                    union_df.withColumn("row_num", F.row_number().over(window_spec))
+                            .filter("row_num = 1")
+                            .drop("row_num", "rank")
+                )
+        
+        df_write_meta = df_final_meta.drop_duplicates(keys_meta)
+        write_delta(df_write_meta, metadata_table, t_r, ["Loan_Conducteur_ID", "VIN", TCID_RUNID, ID])
+
+
+    if df_final_info is not None:
+        if spark.catalog.tableExists(signals_table):
+            df_signals = spark.table(signals_table).filter(f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" and tcid_runid = "{t_r}"')
+
+            if not df_signals.isEmpty():
+                rank_final, rank_signals = (1, 2) if overwrite_mode else (2, 1)
+                df_final_info = df_final_info.withColumn('rank', F.lit(rank_final))
+                df_signals = df_signals.withColumn('rank', F.lit(rank_signals))
+
+                union_df = df_final_info.unionByName(df_signals)
+
+                window_spec = W.Window.partitionBy(*keys_info).orderBy("rank")
+                df_final_info = (
+                    union_df.withColumn("row_num", F.row_number().over(window_spec))
+                            .filter("row_num = 1")
+                            .drop("row_num", "rank")
+                )
+
+        df_write_info = df_final_info.drop_duplicates(keys_info)
+        write_delta(df_write_info, signals_table, t_r, ["Loan_Conducteur_ID", "VIN", TCID_RUNID])
+
+def write_delta(df_final, table, t_r, partition_keys):
+    if df_final.isEmpty(): return
+    
+    print(f'Writing to {table}')
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+    df_final = df_final.checkpoint(eager=True)
+    
+    # Handle table existence and write
+    if spark.catalog.tableExists(table):
+        condition = f'Loan_Conducteur_ID = "{Loan_Conducteur_ID}" AND TCID_RUNID = "{t_r}"'
+        spark.sql(f'DELETE FROM {table} WHERE {condition}').count()
+        df_final.write.format("delta").option("mergeSchema", "true").partitionBy(*partition_keys).mode("append").saveAsTable(table)
+    else:
+        df_final.write.format("delta").option("mergeSchema", "true").partitionBy(*partition_keys).mode("overwrite").saveAsTable(table)
+
+def write_idCard(df_id_card):
+    keys_idCard = ["Loan_Conducteur_ID", "VIN", ID, "KPI_Name"]
+
+    df_id_card = df_id_card.withColumns({'Loan_Conducteur_ID': F.lit(Loan_Conducteur_ID), 'VIN': F.lit(VIN)})
+
+    df_id_card = df_id_card.dropDuplicates()
+    print(f'Writing to {idCard_table}')
+
+    if spark.catalog.tableExists(idCard_table):
+        DeltaTable.forName(spark, idCard_table).delete(F.col("Loan_Conducteur_ID") == Loan_Conducteur_ID)
+        mode = "append"
+    else:
+        mode = "overwrite"
+
+    df_id_card.write.format("delta").partitionBy(*keys_idCard).mode(mode).saveAsTable(idCard_table)
+
+
+
+
+########################################################################################################################################
+from pyspark.sql.functions import col, lit, coalesce
+from pyspark.sql import SparkSession
+
+def merge_and_save(df_new, table_name, key_cols, overwrite=False):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+
+    full_table_name = f"dafe_dev.customer_knowledge_utils.{table_name}"
+
+    if not spark.catalog.tableExists(full_table_name):
+        # La table n'existe pas → création directe
+        df_new.write.format("delta") \
+            .option("mergeSchema", "true") \
+            .partitionBy(key_cols) \
+            .mode("overwrite") \
+            .saveAsTable(full_table_name)
+        return
+
+    # La table existe → fusion
+    df_existing = spark.read.table(full_table_name)
+    all_columns = list(set(df_new.columns).union(set(df_existing.columns)))
+
+    df_joined = df_existing.alias("old").join(df_new.alias("new"), on=key_cols, how="outer")
+
+    def merged_column(col_name):
+        in_old = col_name in df_existing.columns
+        in_new = col_name in df_new.columns
+        col_old = col(f"old.{col_name}") if in_old else lit(None)
+        col_new = col(f"new.{col_name}") if in_new else lit(None)
+
+        if col_name in key_cols:
+            return coalesce(col_new, col_old).alias(col_name)
+
+        if in_old and in_new:
+            return (col_new if overwrite else col_old).alias(col_name)
+
+        elif in_new:
+            return col_new.alias(col_name)
+
+        else:
+            return col_old.alias(col_name)
+
+    df_merged = df_joined.select(*[merged_column(c) for c in all_columns])
+
+    df_merged.write.format("delta") \
+        .option("mergeSchema", "true") \
+        .partitionBy(key_cols) \
+        .mode("overwrite") \
+        .saveAsTable(full_table_name)
+
+
+
+def merge_and_save_trip_table(df_results, table_name, overwrite=False):
+    key_cols = ["DRIVER_ID", "trip_id"]
+    merge_and_save(df_results, table_name, key_cols, overwrite)
+def merge_and_save_driver_table(df_results_driver, table_name, overwrite=False):
+    key_cols = ["DRIVER_ID", "month"]
+    merge_and_save(df_results_driver, table_name, key_cols, overwrite)
+def merge_and_save_insights_table(df_insights, table_name, overwrite=False):
+    key_cols = ["study_title", "criteria", "zone"]
+    merge_and_save(df_insights, table_name, key_cols, overwrite)
+
+
+def merge_and_save_global(level, table, df_results, overwrite):
+    if level == 'Trip_id':
+        merge_and_save_trip_table(df_results, table, overwrite)
+    elif level == 'VIn':
+        merge_and_save_driver_table(df_results, table, overwrite)
+    elif level == 'insight_pfm':
+        merge_and_save_insights_table(df_results, table, overwrite)
+    else:
+        raise ValueError(f"Niveau de sauvegarde inconnu: {level}")
+
+
+
+
+from pyspark.sql.types import *
+
+from pyspark.sql.types import *
+import pandas as pd
+
+
+def get_transform_trip_schema():
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()  # This reuses the existing SparkSession in Databricks
+
+    return StructType([
+        StructField("DRIVER_ID", StringType(), True),
+        StructField("VIN", StringType(), True),
+        StructField("TRIP_ID", DoubleType(), True),
+        StructField("month", IntegerType(), True),
+        StructField("year", IntegerType(), True),
+        StructField("trip_start", TimestampType(), True),
+        StructField("trip_end", TimestampType(), True),
+        StructField("duration_trip_h", DoubleType(), True),
+        StructField("distance_trip_integral_km", DoubleType(), True),
+        StructField("sum_distance_CITY_km", DoubleType(), True),
+        StructField("sum_distance_ROAD_km", DoubleType(), True),
+        StructField("sum_distance_HIGHWAY_km", DoubleType(), True),
+        StructField("trip_quality_flag", IntegerType(), True),
+        StructField("criteria", StringType(), True),           # column name being analyzed
+        StructField("dimension", StringType(), True),          # H0D, H1D, H2D
+        StructField("correspondant_value", StringType(), True) # serialized dict/val
+    ])
+
+
+def transform_trip_dataframe(df: pd.DataFrame, cols_descriptions: dict) -> pd.DataFrame:
+    records = []
+
+    for _, row in df.iterrows():
+        base_info = {
+            "DRIVER_ID": row["DRIVER_ID"],
+            "VIN": row["VIN"],
+            "TRIP_ID": row["TRIP_ID"],
+            "month": row["month"],
+            "year": row["year"],
+            "trip_start": row["trip_start"],
+            "trip_end": row["trip_end"],
+            "duration_trip_h": row["duration_trip_h"],
+            "distance_trip_integral_km": row["distance_trip_integral_km"],
+            "sum_distance_CITY_km": row["sum_distance_CITY_km"],
+            "sum_distance_ROAD_km": row["sum_distance_ROAD_km"],
+            "sum_distance_HIGHWAY_km": row["sum_distance_HIGHWAY_km"],
+            "trip_quality_flag": row["trip_quality_flag"]
+        }
+
+        for col, description in cols_descriptions.items():
+            val = row[col]
+
+            # Try to parse JSON strings back into dicts
+            if isinstance(val, str):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict):
+                        val = parsed
+                except Exception:
+                    pass
+
+            # Determine dimension and shape
+            if isinstance(val, dict):
+                # H2D if any nested dicts exist
+                if any(isinstance(v, dict) for v in val.values()):
+                    dimension = "H2D"
+                else:
+                    dimension = "H1D"
+            else:
+                # Scalar value -> H0D
+                dimension = "H0D"
+
+            dimension_shape = get_dimension_shape(val)
+
+            records.append({
+                **base_info,
+                "criteria": col,
+                "dimension": dimension,
+                "correspondant_value": json.dumps(val) if isinstance(val, dict) else str(val)
+            })
+
+    return pd.DataFrame(records)
+
+
+import json
+
+
+## to be updated by optimized version 
+def get_dimension_shape(val):
+    """
+    Calculate the shape of a dimension based on its structure.
+    - H0D (scalar): returns (1,)
+    - H1D (flat dict): returns (1, len(dict))
+    - H2D (nested dict): returns (len(outer_dict), len(inner_dict))
+    """
+    if isinstance(val, dict):
+        # Check if it's H2D (nested dict)
+        if any(isinstance(v, dict) for v in val.values()):
+            # H2D: get the outer length and inner length
+            outer_len = len(val)
+            # Get the length of the first nested dict as representative
+            inner_len = len(next(iter(val.values()))) if val else 0
+            return f"({outer_len}, {inner_len})"
+        else:
+            # H1D: flat dict
+            return f"(1, {len(val)})"
+    else:
+        # H0D: scalar
+        return "(1,)"
+
+def create_and_save_criteria_description(result_df, criterias_dict, params_dict, level, table_name = "dafe_dev.customer_knowledge_utils.ck_criteria_description"):
+    from pyspark.sql import SparkSession
+    import json
+    import pandas as pd
+    import ast
+    from datetime import datetime
+    
+    spark = SparkSession.builder.getOrCreate()
+    current_dt = datetime.now().date()
+    
+    records = []
+    params_dict = ast.literal_eval(params_dict)
+    signals_list = params_dict['signals']
+    source = params_dict['source']
+    
+    # Collect criteria info with values for shape calculation
+    criteria_info = result_df.select("criteria", "dimension", "correspondant_value").distinct().collect()
+    
+    # Create a mapping for quick lookup including shape
+    criteria_mapping = {}
+    for row in criteria_info:
+        if row.criteria not in criteria_mapping:
+            # Parse the value if it's a JSON string
+            val = row.correspondant_value
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except:
+                    pass
+            
+            # Only calculate shape if level is 'TRIP_ID'
+            if level == 'TRIP_ID':
+                shape = get_dimension_shape(val)
+            else:
+                shape = None
+            
+            criteria_mapping[row.criteria] = (row.dimension, shape)
+    
+    for criteria, description in criterias_dict.items():
+        if criteria in criteria_mapping:
+            dimension, shape = criteria_mapping[criteria]
+        else:
+            dimension = "Unknown"
+            shape = None if level != 'TRIP_ID' else "Unknown"
+        
+        # Create details dictionary
+        details = {
+            "description": description,
+            "dimension": dimension,
+            "signals_list": signals_list  
+        }
+        
+        # Only add shape to details if level is 'TRIP_ID'
+        if level == 'TRIP_ID':
+            details["shape"] = shape
+        
+        records.append({
+            "criteria": criteria,
+            "source": source,
+            "level": level,
+            "details": json.dumps(details),
+            "dt": current_dt
+        })
+    
+    criteria_details_df = pd.DataFrame(records)
+    
+    criteria_details_spark_df = spark.createDataFrame(criteria_details_df)
+    
+    criteria_details_spark_df.write.mode("append").saveAsTable(table_name)
+    
+    print(f"Successfully appended criteria_details_df to {table_name}")
+
+
+from pyspark.sql.types import *
+from pyspark.sql.types import *
+
+def get_transform_drivers_schema():
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()  # This reuses the existing SparkSession in Databricks
+    
+    return StructType([
+        StructField("DRIVER_ID", StringType(), True),
+        StructField("VIN", StringType(), True),
+        StructField("month", IntegerType(), True),
+        StructField("year", IntegerType(), True),
+        StructField("first_trip", TimestampType(), True),
+        StructField("last_trip", TimestampType(), True),
+        StructField("total_trips", IntegerType(), True),
+        StructField("valid_trips", IntegerType(), True),
+        StructField("dist_tot_integ_km", DoubleType(), True),
+        StructField("total_duration_h", DoubleType(), True),
+        StructField("sum_distance_driver_year_month_CITY_km", DoubleType(), True),
+        StructField("sum_distance_driver_year_month_ROAD_km", DoubleType(), True),
+        StructField("sum_distance_driver_year_month_HIGHWAY_km", DoubleType(), True),
+        StructField("valid_client", IntegerType(), True),
+        StructField("criteria", StringType(), True),             # analyzed column
+        StructField("dimension", StringType(), True),            # H0D, H1D, H2D
+        StructField("classA", StringType(), True),               # first-level key
+        StructField("classB", StringType(), True),               # second-level key
+        StructField("classC", StringType(), True),               # reserved for deeper hierarchy
+        StructField("correspondant_value", DoubleType(), True)   # 
+    ])
+
+
+
+def transform_drivers_dataframe(df: pd.DataFrame, cols_descriptions: dict, params: str = None) -> pd.DataFrame:
+
+    records = []
+
+    for _, row in df.iterrows():
+        base_info = {
+            "DRIVER_ID": row["DRIVER_ID"],
+            "VIN": row["VIN"],
+            "month": row["month"],
+            "year": row["year"],
+            "first_trip": row["first_trip"],
+            "last_trip": row["last_trip"],
+            "total_trips": row["total_trips"],
+            "valid_trips": row["valid_trips"],
+            "dist_tot_integ_km": row["dist_tot_integ_km"],
+            "total_duration_h": row["total_duration_h"],
+            "sum_distance_driver_year_month_CITY_km": row["sum_distance_driver_year_month_CITY_km"],
+            "sum_distance_driver_year_month_ROAD_km": row["sum_distance_driver_year_month_ROAD_km"],
+            "sum_distance_driver_year_month_HIGHWAY_km": row["sum_distance_driver_year_month_HIGHWAY_km"],
+            "valid_client": row["valid_client"],
+        }
+
+        for col, description in cols_descriptions.items():
+            val = row[col]
+
+            # Try to parse JSON strings back to dicts
+            if isinstance(val, str):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict):
+                        val = parsed
+                except Exception:
+                    pass
+
+            # Calculate dimension shape
+            dimension_shape = get_dimension_shape(val)
+
+            # Case 1: Scalar -> H0D
+            if not isinstance(val, dict):
+                records.append({
+                    **base_info,
+                    "criteria": col,
+                    "dimension": "H0D",
+                    "classA": "none",
+                    "classB": "none",
+                    "classC": "none",
+                    "correspondant_value": val
+                })
+            
+            # Case 2: Dict -> H1D or H2D
+            else:
+                for k, v in val.items():
+                    if isinstance(v, dict):  # H2D
+                        for k2, v2 in v.items():
+                            records.append({
+                                **base_info,
+                                "criteria": col,
+                                "dimension": "H2D",
+                                "classA": k,
+                                "classB": k2,
+                                "classC": "none",
+                                "correspondant_value": v2
+                            })
+                    else:  # H1D
+                        records.append({
+                            **base_info,
+                            "criteria": col,
+                            "dimension": "H1D",
+                            "classA": k,
+                            "classB": "none",
+                            "classC": "none",
+                            "correspondant_value": v
+                        })
+
+    return pd.DataFrame(records)
+
+
+#     return pd.DataFrame(records)
+#STORAGE FUNCTIONS DEFINITIONS
+import hashlib, re, string, secrets
+import pandas as pd
+import json
+
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from datetime import date
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from typing import List, Dict, Optional, Any
+ 
+
+#batch builder class to construct the df/rows to be writen into the PFM level tables
+class PFMBatchStructureBuilder:
+
+    def __init__(self):
+        """Initialize batch builder"""
+        self._study_metadata = {
+            "Study_title": None,
+            "Energy_category": None,
+            "Segment": None,
+            "region_country": None,
+            "Data_source": None,
+            "Vin_list": None,
+            "Period_date_start": None,
+            "Period_date_end": None,
+            "List_of_signal_names": None
+        }
+        
+        self._criteria_rows = []
+        self._errors = []
+    
+    
+    def set_study_title(self, title: str):
+        """Set study title (shared across all criteria)"""
+        if not title or not isinstance(title, str):
+            self._errors.append("Study title must be a non-empty string")
+        else:
+            self._study_metadata["Study_title"] = title.strip()
+        return self
+    
+    
+    def set_population(self, vins: List[str], energy_category: str, segment: str, region_country: str):
+        """Set population metadata (shared across all criteria)"""
+        if not vins or len(vins) == 0:
+            self._errors.append("VIN list cannot be empty")
+        else:
+            self._study_metadata["Vin_list"] = ",".join(str(v) for v in vins)
+        
+        self._study_metadata["Energy_category"] = energy_category
+        self._study_metadata["Segment"] = segment
+        self._study_metadata["region_country"] = region_country
+        
+        return self
+    
+    
+    def set_data_source(self, source: str, signals: List[str], start_date: str, end_date: str):
+        """Set data source metadata (shared across all criteria)"""
+        self._study_metadata["Data_source"] = source
+        
+        if signals:
+            self._study_metadata["List_of_signal_names"] = ",".join(str(s) for s in signals)
+        else :
+            self._study_metadata["List_of_signal_names"] = ""
+        
+        self._study_metadata["Period_date_start"] = start_date if start_date else ""
+        self._study_metadata["Period_date_end"] = end_date if end_date else ""
+        
+        return self
+    
+    
+    def add_criteria(self, 
+                     label: str, 
+                     description: str, 
+                     dimension: str, 
+                     norm_applied: str,
+                     modeling_df=None,
+                     matrix: Optional[Dict] = None,
+                     boundaries: Optional[Dict] = None):
+        """Add a criteria row to the batch"""
+        valid_dimensions = ["H0D", "H1D", "H2D", "H3D"]
+        if dimension not in valid_dimensions:
+            self._errors.append(f"Invalid dimension '{dimension}' for criteria '{label}'")
+            return self
+        
+        criteria_row = {
+            "Criteria_label": label,
+            "Criteria_description": description,
+            "Norm_applied": norm_applied,
+            "Final_stats_min_max_moyenne": "[]",
+            "loi": None,
+            "parameters": None,
+            "class_index": None,
+            "R2": None,
+            "client1pct": None,
+            "client50pct": None,
+            "client99pct": None,
+            "sample_client1pct": None,
+            "sample_client50pct": None,
+            "sample_client99pct": None,
+            "dfmatrix": None,
+            "dimension": dimension,
+            
+        }
+        
+        if modeling_df is not None:
+            self._extract_modeling_results(criteria_row, modeling_df, label)
+        
+        if dimension != "H0D" and matrix is not None:
+            self._add_matrix_to_row(criteria_row, matrix, boundaries)
+        
+        self._criteria_rows.append(criteria_row)
+        
+        print(f"✅ Added criteria: {label} (dimension: {dimension})")
+        
+        return self
+    
+    
+    def _extract_modeling_results(self, criteria_row: Dict, modeling_df, target_criteria: str):
+        """Extract modeling results for a specific criteria (internal helper)"""
+        try:
+            if hasattr(modeling_df, 'filter'):
+                row_data = modeling_df.filter(modeling_df.criteria == target_criteria).first()
+            elif hasattr(modeling_df, 'loc'):
+                filtered = modeling_df[modeling_df['criteria'] == target_criteria]
+                row_data = filtered.iloc[0] if len(filtered) > 0 else None
+            else:
+                print(f"⚠️  Unknown DataFrame type for '{target_criteria}'")
+                return
+            
+            if row_data:
+                try:
+                    final_stats = [
+                        float(row_data['data_min']) if row_data['data_min'] is not None else None,
+                        float(row_data['data_max']) if row_data['data_max'] is not None else None,
+                        float(row_data['data_mean']) if row_data['data_mean'] is not None else None
+                    ]
+                    criteria_row["Final_stats_min_max_moyenne"] = json.dumps(final_stats)
+                except Exception as e:
+                    print(f"⚠️  Error extracting stats for '{target_criteria}': {e}")
+                
+                criteria_row["loi"] = str(row_data['loi']) if row_data['loi'] is not None else None
+                criteria_row["parameters"] = str(row_data['parameters']) if row_data['parameters'] is not None else None
+                
+                try:
+                    criteria_row["class_index"] = int(row_data['class_index']) if row_data['class_index'] is not None else None
+                except (ValueError, TypeError):
+                    criteria_row["class_index"] = None
+                
+                try:
+                    criteria_row["R2"] = float(row_data['R2']) if row_data['R2'] is not None else None
+                except (ValueError, TypeError):
+                    criteria_row["R2"] = None
+                
+                percentile_mapping = {
+                    'client1%': 'client1pct',
+                    'client50%': 'client50pct',
+                    'client99%': 'client99pct',
+                    'sample_client1%': 'sample_client1pct',
+                    'sample_client50%': 'sample_client50pct',
+                    'sample_client99%': 'sample_client99pct'
+                }
+                
+                for src, dest in percentile_mapping.items():
+                    try:
+                        value = row_data[src] if src in row_data else None
+                        criteria_row[dest] = float(value) if value is not None else None
+                    except (ValueError, TypeError, KeyError):
+                        criteria_row[dest] = None
+                
+                print(f"  ✅ Modeling results extracted for '{target_criteria}'")
+            else:
+                print(f"  ⚠️  No modeling data found for '{target_criteria}'")
+        
+        except Exception as e:
+            print(f"  ⚠️  Error extracting modeling for '{target_criteria}': {e}")
+    
+    
+    def _add_matrix_to_row(self, criteria_row: Dict, matrix: Dict, boundaries: Optional[Dict]):
+        """Add matrix with boundaries to criteria row (internal helper)"""
+        if not matrix or not isinstance(matrix, dict):
+            print(f"  ⚠️  Invalid matrix for '{criteria_row['Criteria_label']}'")
+            return
+        
+        if boundaries:
+            matrix_with_boundaries = {
+                "x_axis": boundaries.get("x_axis", "unknown"),
+                "y_axis": boundaries.get("y_axis", "unknown"),
+                "x_bins": boundaries.get("x_bins", ""),
+                "y_bins": boundaries.get("y_bins", ""),
+                "matrix": matrix
+            }
+        else:
+            matrix_with_boundaries = {"matrix": matrix}
+        
+        criteria_row["dfmatrix"] = json.dumps(matrix_with_boundaries)
+        print(f"  ✅ Matrix added for '{criteria_row['Criteria_label']}'")
+    
+    
+    def validate(self) -> bool:
+        """Validate study metadata and criteria rows"""
+        required_metadata = [
+            "Study_title", "Energy_category", "Segment", "region_country",
+            "Data_source", "Vin_list", "List_of_signal_names"
+        ]
+        
+        for field in required_metadata:
+            if self._study_metadata[field] is None : 
+                self._errors.append(f"Required study metadata '{field}' is missing")
+        
+        if len(self._criteria_rows) == 0:
+            self._errors.append("No criteria added - use add_criteria() to add at least one")
+        
+        if self._errors:
+            print(f"❌ Validation failed with {len(self._errors)} error(s):")
+            for error in self._errors:
+                print(f"   - {error}")
+            return False
+        
+        print(f"✅ Validation passed ({len(self._criteria_rows)} criteria)")
+        return True
+    
+    
+    def build(self) -> Dict[str, Any]:
+        """Build and return the batch structure"""
+        if not self.validate():
+            raise ValueError(f"Cannot build - validation failed with {len(self._errors)} error(s)")
+        
+        result = {
+            "study_metadata": dict(self._study_metadata),
+            "criteria_rows": [dict(row) for row in self._criteria_rows]
+        }
+        
+        print(f"✅ Batch structure built: {len(self._criteria_rows)} criteria for study '{self._study_metadata['Study_title']}'")
+        
+        return result
+    
+    
+    def get_errors(self) -> List[str]:
+        """Return list of validation errors"""
+        return list(self._errors)
+    
+    
+    def reset(self):
+        """Reset builder to initial state"""
+        self.__init__()
+        return self
+
+def create_nested_matrix_from_df(df, value_column):
+    """
+    Create a nested matrix structure from a DataFrame with classA, classB, classC columns.
+    
+    Args:
+        df: Spark or Pandas DataFrame with columns classA, classB, classC, and a value column
+        value_column: Name of the column containing the values to nest
+        
+    Returns:
+        nested_matrix: Dictionary structure {classA: {classB: {classC: value}}}
+    """
+    from pyspark.sql import DataFrame as SparkDataFrame
+    
+    # Convert to Pandas if Spark
+    if isinstance(df, SparkDataFrame):
+        df_pandas = df.select(
+            "classA", "classB", "classC", 
+            F.col(value_column).alias("value")
+        ).toPandas()
+    else:
+        df_pandas = df[["classA", "classB", "classC", value_column]].copy()
+        df_pandas.rename(columns={value_column: "value"}, inplace=True)
+    
+    nested_matrix = {}
+    for _, row in df_pandas.iterrows():
+        classA = str(row['classA']) if pd.notna(row['classA']) else "none"
+        classB = str(row['classB']) if pd.notna(row['classB']) else "none"
+        classC = str(row['classC']) if pd.notna(row['classC']) else "none"
+        value = float(row['value']) if pd.notna(row['value']) else 0.0
+        
+        if classA not in nested_matrix:
+            nested_matrix[classA] = {}
+        if classB not in nested_matrix[classA]:
+            nested_matrix[classA][classB] = {}
+        
+        nested_matrix[classA][classB][classC] = value
+    
+    return nested_matrix
+
+def generate_study_ref(study_title):
+    """
+    Generate unique Study_ref from study title
+    Extracts prefix from [brackets] or uses 'PFM' default, adds random 6-char suffix
+    """
+    if not study_title:
+        study_title = f"STUDY_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    match = re.search(r'\[([^\]]+)\]', study_title)
+    
+    if match:
+        prefix = match.group(1).strip().upper()
+    else:
+        prefix = "PFM"
+    
+    suffix = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+    
+    return f"{prefix}_{suffix}"
+
+def explode_matrix_to_dataframe(dfmatrix_json, study_ref, criteria_label):
+    """
+    Explode nested 3D JSON matrix into flat dataframe for Ndim table
+    
+    Expected structure (two layers):
+    {
+      "x_axis": "regime_mel",
+      "y_axis": "couple_mel",
+      "x_bins": "min=-90;max=10410;step=50",
+      "y_bins": "min=-4000;max=5000;step=5",
+      "matrix": {
+        "classA": {"classB": {"classC": value}}
+      }
+    }
+    
+    Returns: pandas DataFrame with columns [Study_ref, Criteria_label, Dimension, 
+                                           Dimensions_boudaries, ClassA, ClassB, ClassC, 
+                                           Correspondant_value]
+    """
+    if not dfmatrix_json or dfmatrix_json in ["", "none", "None", None]:
+        return None
+    
+    try:
+        if isinstance(dfmatrix_json, str):
+            wrapper_data = json.loads(dfmatrix_json)
+        else:
+            wrapper_data = dfmatrix_json
+    except Exception as e:
+        print(f"⚠️  Error parsing matrix JSON: {e}")
+        return None
+    
+    if not isinstance(wrapper_data, dict):
+        return None
+    
+    x_axis = wrapper_data.get("x_axis", "unknown")
+    y_axis = wrapper_data.get("y_axis", "unknown")
+    x_bins = wrapper_data.get("x_bins", "")
+    y_bins = wrapper_data.get("y_bins", "")
+    
+    dimensions_boundaries = f"x_axis={x_axis}; y_axis={y_axis}; x_bins=[{x_bins}]; y_bins=[{y_bins}]"
+    
+    matrix_data = wrapper_data.get("matrix")
+    
+    if not matrix_data or not isinstance(matrix_data, dict) or len(matrix_data) == 0:
+        print(f"⚠️  No valid 'matrix' key found in dfmatrix")
+        return None
+    
+    records = []
+    
+    for classA, level2 in matrix_data.items():
+        if not isinstance(level2, dict):
+            continue
+            
+        for classB, level3 in level2.items():
+            if not isinstance(level3, dict):
+                continue
+                
+            for classC, value in level3.items():
+                try:
+                    records.append({
+                        "Study_ref": study_ref,
+                        "Criteria_label": criteria_label,
+                        "Dimension": detect_dimension(classA, classB, classC),
+                        "Dimensions_boudaries": dimensions_boundaries,
+                        "ClassA": str(classA),
+                        "ClassB": str(classB),
+                        "ClassC": str(classC),
+                        "Correspondant_value": float(value)
+                    })
+                except (ValueError, TypeError) as e:
+                    print(f"⚠️  Skipping invalid value at [{classA}][{classB}][{classC}]: {e}")
+                    continue
+    
+    if not records:
+        return None
+    
+    return pd.DataFrame(records)
+
+def detect_dimension_from_df(df):
+    """
+    Detect dimension from a DataFrame by checking classA, classB, classC columns
+    """
+    from pyspark.sql import DataFrame as SparkDataFrame
+    import pandas as pd
+    
+    required_cols = ["classA", "classB", "classC"]
+    
+    if isinstance(df, SparkDataFrame):
+        df_cols = df.columns
+        if not all(col in df_cols for col in required_cols):
+            raise ValueError(f"DataFrame must contain columns: {required_cols}. Found: {df_cols}")
+        
+        first_row = df.filter(
+            (df.classA.isNotNull()) | 
+            (df.classB.isNotNull()) | 
+            (df.classC.isNotNull())
+        ).first()
+        
+        if first_row is None:
+            return "H0D"
+        
+        classA = first_row.classA if hasattr(first_row, 'classA') else None
+        classB = first_row.classB if hasattr(first_row, 'classB') else None
+        classC = first_row.classC if hasattr(first_row, 'classC') else None
+        
+    elif isinstance(df, pd.DataFrame):
+        if not all(col in df.columns for col in required_cols):
+            raise ValueError(f"DataFrame must contain columns: {required_cols}. Found: {list(df.columns)}")
+        
+        non_null_rows = df.dropna(subset=required_cols, how='all')
+        
+        if len(non_null_rows) == 0:
+            return "H0D"
+        
+        first_row = non_null_rows.iloc[0]
+        classA = first_row['classA']
+        classB = first_row['classB']
+        classC = first_row['classC']
+    
+    else:
+        raise TypeError("DataFrame must be either Spark DataFrame or Pandas DataFrame")
+    
+    return detect_dimension(classA, classB, classC)
+
+def detect_dimension(classA, classB, classC):
+    """
+    Detect dimension based on which classes are not 'none'
+    """
+    classA_filled = str(classA).lower() not in ["none", "", "null"] and classA is not None
+    classB_filled = str(classB).lower() not in ["none", "", "null"] and classB is not None
+    classC_filled = str(classC).lower() not in ["none", "", "null"] and classC is not None
+    # print(f"class_A filled {classA_filled}, class_B filled {classB_filled}, class_C filled {classC_filled}")
+
+    if classA_filled and classB_filled and classC_filled:
+        return "H3D"
+    elif classA_filled and classB_filled:
+        return "H2D"
+    elif classA_filled:
+        return "H1D"
+    else:
+        return "H0D"
+
+def auto_detect_dimensions(df, criteria_list):
+    """
+    Automatically detect dimension for each criteria in the list
+    """
+    from pyspark.sql import DataFrame as SparkDataFrame
+    import pandas as pd
+    
+    dimensions_map = {}
+    required_cols = ["classA", "classB", "classC"]
+    
+    if isinstance(df, SparkDataFrame):
+        df_cols = df.columns
+        
+        if not all(col in df_cols for col in required_cols):
+            raise ValueError(f"DataFrame must contain columns: {required_cols}. Found: {df_cols}")
+        
+        missing_criteria = [c for c in criteria_list if c not in df_cols]
+        if missing_criteria:
+            raise ValueError(f"Criteria not found in DataFrame: {missing_criteria}")
+        
+        print(f"🔍 Detecting dimensions for {len(criteria_list)} criteria...")
+        
+        for criteria in criteria_list:
+            try:
+                criteria_df = df.filter(df[criteria].isNotNull())
+                
+                non_none_rows = criteria_df.filter(
+                    (F.lower(F.col("classA")) != "none") | 
+                    (F.lower(F.col("classB")) != "none") | 
+                    (F.lower(F.col("classC")) != "none")
+                )
+                
+                if non_none_rows.count() == 0:
+                    dimensions_map[criteria] = "H0D"
+                    print(f"  ✅ {criteria}: H0D (all classes are 'none')")
+                    continue
+                
+                # Get first row with actual class data
+                first_row = non_none_rows.first()
+                
+                classA = first_row.classA if hasattr(first_row, 'classA') else None
+                classB = first_row.classB if hasattr(first_row, 'classB') else None
+                classC = first_row.classC if hasattr(first_row, 'classC') else None
+                
+                dimension = detect_dimension(classA, classB, classC)
+                dimensions_map[criteria] = dimension
+                
+                # print(f"  ✅ {criteria}: {dimension} (classA={classA}, classB={classB}, classC={classC})")
+                
+            except Exception as e:
+                print(f"  ⚠️  Error detecting dimension for '{criteria}': {e}")
+                dimensions_map[criteria] = "H0D"
+            
+    elif isinstance(df, pd.DataFrame):
+        df_cols = df.columns.tolist()
+        
+        if not all(col in df_cols for col in required_cols):
+            raise ValueError(f"DataFrame must contain columns: {required_cols}. Found: {df_cols}")
+        
+        missing_criteria = [c for c in criteria_list if c not in df_cols]
+        if missing_criteria:
+            raise ValueError(f"Criteria not found in DataFrame: {missing_criteria}")
+        
+        print(f"🔍 Detecting dimensions for {len(criteria_list)} criteria...")
+        
+        for criteria in criteria_list:
+            try:
+                criteria_df = df[df[criteria].notna()]
+                
+                if len(criteria_df) == 0:
+                    dimensions_map[criteria] = "H0D"
+                    print(f"  ✅ {criteria}: H0D (no data)")
+                    continue
+                
+                # ✅ FIXED: Filter out rows where ALL classes are "none"
+                non_none_rows = criteria_df[
+                    (criteria_df['classA'].str.lower() != 'none') | 
+                    (criteria_df['classB'].str.lower() != 'none') | 
+                    (criteria_df['classC'].str.lower() != 'none')
+                ]
+                
+                if len(non_none_rows) == 0:
+                    dimensions_map[criteria] = "H0D"
+                    print(f"  ✅ {criteria}: H0D (all classes are 'none')")
+                    continue
+                
+                first_row = non_none_rows.iloc[0]
+                classA = first_row['classA']
+                classB = first_row['classB']
+                classC = first_row['classC']
+                
+                dimension = detect_dimension(classA, classB, classC)
+                dimensions_map[criteria] = dimension
+                
+                # print(f"  ✅ {criteria}: {dimension} (classA={classA}, classB={classB}, classC={classC})")
+                
+            except Exception as e:
+                print(f"  ⚠️  Error detecting dimension for '{criteria}': {e}")
+                dimensions_map[criteria] = "H0D"
+    
+    else:
+        raise TypeError("DataFrame must be either Spark DataFrame or Pandas DataFrame")
+    
+    print(f"✅ Dimension detection complete: {len(dimensions_map)} criteria mapped")
+    
+    return dimensions_map
+
+def store_trip_insights(df_new, table_name, study_title=None, overwrite=False):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+
+    key_cols = ["DRIVER_ID", "TRIP_ID", "criteria"]
+
+    # ✅ Add study_title and dt columns
+    df_new = (
+        df_new
+        .withColumn("dt", F.current_date())
+        .withColumn("study_title", F.lit(study_title))
+    )
+
+    if not spark.catalog.tableExists(table_name):
+        # Table does not exist → create
+        df_new.write.format("delta") \
+            .option("mergeSchema", "true") \
+            .option("overwriteSchema", "true") \
+            .partitionBy("DRIVER_ID", "TRIP_ID") \
+            .mode("overwrite") \
+            .saveAsTable(table_name)
+        return
+
+    df_existing = spark.read.table(table_name)
+
+    if overwrite:
+        # Delete old rows matching new keys, then append new ones
+        cond = [df_existing[k] == df_new[k] for k in key_cols]
+        df_filtered = df_existing.join(df_new, cond, "left_anti")
+        df_final = df_filtered.unionByName(df_new)
+    else:
+        # Just append without remodriverg old rows
+        df_final = df_existing.unionByName(df_new)
+
+    # Write final DF with dynamic dt
+    df_final.write.format("delta") \
+        .option("mergeSchema", "true") \
+        .option("overwriteSchema", "true") \
+        .partitionBy("DRIVER_ID", "TRIP_ID") \
+        .mode("overwrite") \
+        .saveAsTable(table_name)
+
+def store_drivers_insights(df_new, table_name, study_title=None, overwrite=False):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+
+    key_cols = ["DRIVER_ID", "month", "year", "criteria"]
+
+    # ✅ Add study_title and dt columns
+    df_new = (
+        df_new
+        .withColumn("dt", F.current_date())
+        .withColumn("study_title", F.lit(study_title))
+    )
+
+    if not spark.catalog.tableExists(table_name):
+        # Table does not exist → create
+        df_new.write.format("delta") \
+            .option("mergeSchema", "true") \
+            .option("overwriteSchema", "true") \
+            .partitionBy("DRIVER_ID", "year", "month") \
+            .mode("overwrite") \
+            .saveAsTable(table_name)
+        return
+
+    df_existing = spark.read.table(table_name)
+
+    if overwrite:
+        # Delete old rows matching new keys, then append new ones
+        cond = [df_existing[k] == df_new[k] for k in key_cols]
+        df_filtered = df_existing.join(df_new, cond, "left_anti")
+        df_final = df_filtered.unionByName(df_new)
+    else:
+        # Just append without removing old rows
+        df_final = df_existing.unionByName(df_new)
+
+    # Write final DF with dynamic dt
+    df_final.write.format("delta") \
+        .option("mergeSchema", "true") \
+        .option("overwriteSchema", "true") \
+        .partitionBy("DRIVER_ID", "year", "month") \
+        .mode("overwrite") \
+        .saveAsTable(table_name)
+
+def store_pfm_insights(df, table_name="dafe_dev.customer_knowledge_utils.ck_pfm_insights", study_title=None):
+    spark = SparkSession.builder.getOrCreate()
+    spark.sparkContext.setCheckpointDir("/tmp/spark-checkpoints")
+    
+    # ✅ Add dt column and optional study_title
+    df_with_dt = (
+        df
+        .withColumn("dt", F.current_date())
+        .withColumn("study_title", F.lit(study_title))
+    )
+
+    # Check if table exists
+    if spark._jsparkSession.catalog().tableExists(table_name):
+        df_with_dt.write.mode("append").format("delta").saveAsTable(table_name)
+    else:
+        df_with_dt.write.mode("overwrite").option("overwriteSchema", "true").format("delta").saveAsTable(table_name)
+
+
+def get_normalization_info(normalization_config):
+    """
+    Returns both the normalized criteria list and the norms applied dictionary.
+    
+    Args:
+        normalization_config: Dictionary with normalization configuration
+        
+    Returns:
+        tuple: (normed_criterias_list, norms_applied_dict)
+    """
+    normed_criterias_list = []
+    norms_applied = {}
+    
+    for criteria_name, config in normalization_config.items():
+        norm_type = config['normalization_type']
+        
+        if norm_type == 'period':
+            norm_period = config['norm_period']
+            normalized_name = f"{criteria_name}_normalized_{norm_period}_year"
+            normed_criterias_list.append(normalized_name)
+            norms_applied[normalized_name] = f"{norm_period}y"
+        
+        elif norm_type == 'distance':
+            norm_distance = config['norm_distance']
+            normalized_name = f"{criteria_name}_normalized_{norm_distance}_Km"
+            normed_criterias_list.append(normalized_name)
+            norms_applied[normalized_name] = f"{norm_distance}km"
+        
+        elif norm_type == 'both':
+            norm_period = config['norm_period']
+            norm_distance = config['norm_distance']
+            normalized_name = f"{criteria_name}_normalized_final_min_{norm_period}_year_and_{norm_distance}_Km"
+            normed_criterias_list.append(normalized_name)
+            norms_applied[normalized_name] = f"{norm_period}y_{norm_distance}km"
+    
+    return normed_criterias_list, norms_applied
+
+def create_pfm_batch_structure(df_normalized_weighted,modeling_df, Normalization_config, note_usage_sample, sample_description, study_name):
+    import ast
+    
+    params_dict = ast.literal_eval(sample_description)
+    normed_criterias_list, norm_applied = get_normalization_info(Normalization_config)
+    dimensions = auto_detect_dimensions(df_normalized_weighted, normed_criterias_list)
+    
+    # Issue for matrices since only 1 matrix can be handled at a time
+    matrices = {}
+    for criteria in normed_criterias_list:
+        print(f"Creating matrix for {criteria}...")
+        matrices[criteria] = create_nested_matrix_from_df(
+            df_normalized_weighted, 
+            criteria
+        )
+        print(f"  ✅ Matrix created: {len(matrices[criteria])} bins")
+    
+    # Build batch
+    builder = PFMBatchStructureBuilder()
+    
+    # Set study-level metadata ONCE
+    builder.set_study_title(study_name)
+    builder.set_population(
+        params_dict['list_vin'], 
+        note_usage_sample["category"],  # These variables need to be defined or passed as parameters
+        note_usage_sample["segment"], 
+        note_usage_sample["country"]
+    )
+    builder.set_data_source(
+        params_dict['source'], 
+        params_dict['signals'], 
+        params_dict['start_date'], 
+        params_dict['end_date']
+    )
+    
+    for criteria in normed_criterias_list:
+        builder.add_criteria(
+            label=criteria,
+            description="",
+            dimension=dimensions[criteria],
+            norm_applied=norm_applied[criteria],
+            modeling_df=modeling_df,  
+            matrix=matrices.get(criteria),  # None if not present
+            boundaries={
+                "x_axis": "regime_mel",
+                "y_axis": "couple_mel",
+                "x_bins": "min=-75;max=10450;step=50",
+                "y_bins": "min=-3997.5;max=4997.5;step=5"
+            } if criteria in matrices else None
+        )
+    
+    batch_result = builder.build()
+    return batch_result 
+
+def store_insights_hnd(df_new, level, table_name=None, study_title=None, overwrite=False):
+    from pyspark.sql import SparkSession
+    import pyspark.sql.functions as F
+    import json
+    
+    # Initialize SparkSession ONCE at the beginning
+    spark = SparkSession.builder.getOrCreate()
+   
+    if level.upper() == "TRIP_ID":
+        if table_name is None:
+            table_name = "dafe_dev.customer_knowledge_utils.ck_trips_insights_ivdp"
+        store_trip_insights(df_new, table_name=table_name, study_title=study_title, overwrite=overwrite)
+        print(f"✅ Trip insights stored to {table_name}")
+        return None
+ 
+    elif level.upper() == "DRIVER_ID":
+        if table_name is None:
+            table_name = "dafe_dev.customer_knowledge_utils.ck_drivers_insights_ivdp"
+        store_drivers_insights(df_new, table_name=table_name, study_title=study_title, overwrite=overwrite)
+        print(f"✅ Driver insights stored to {table_name}")
+        return None
+ 
+    elif level.upper() == "PFM":
+        main_table = "dafe_dev.customer_knowledge_utils.ck_pfm_insights_main"
+        ndim_table = "dafe_dev.customer_knowledge_utils.insight_values_Ndim"
+       
+        # Validate input structure
+        if not isinstance(df_new, dict):
+            raise ValueError("For PFM level, df_new must be a dictionary with 'study_metadata' and 'criteria_rows'")
+       
+        if "study_metadata" not in df_new or "criteria_rows" not in df_new:
+            raise ValueError("PFM input must contain 'study_metadata' and 'criteria_rows' keys")
+       
+        study_metadata = df_new["study_metadata"]
+        criteria_rows = df_new["criteria_rows"]
+       
+        # Check if study_ref already exists (spark is now defined above)
+        if spark.catalog.tableExists(main_table):
+            existing_studies = spark.read.table(main_table) \
+                .filter(F.col("Study_title") == study_metadata.get("Study_title")) \
+                .select("Study_ref") \
+                .distinct()
+           
+            if existing_studies.count() > 0:
+                study_ref = existing_studies.first().Study_ref
+                print(f"📚 Found existing study - reusing Study_ref: {study_ref}")
+            else:
+                study_ref = generate_study_ref(study_metadata.get("Study_title", "Untitled"))
+                print(f"✨ New study - generated Study_ref: {study_ref}")
+        else:
+            study_ref = generate_study_ref(study_metadata.get("Study_title", "Untitled"))
+            print(f"📊 Generated new Study_ref: {study_ref}")
+       
+        # Build Population_description JSON string
+        population_description = json.dumps({
+            "Energy_category": study_metadata.get("Energy_category"),
+            "Segment": study_metadata.get("Segment"),
+            "Region_country": study_metadata.get("region_country")
+        })
+       
+        # Build Sample_definition JSON string
+        sample_definition = json.dumps({
+            "Data_source": study_metadata.get("Data_source"),
+            "Vin_list": study_metadata.get("Vin_list"),
+            "Period_date_start": study_metadata.get("Period_date_start"),
+            "Period_date_end": study_metadata.get("Period_date_end"),
+            "List_of_signal_names": study_metadata.get("List_of_signal_names")
+        })
+       
+        main_rows = []
+        all_ndim_records = []
+       
+        # Process each criteria
+        for criteria_row in criteria_rows:
+            has_modeling = (criteria_row.get("loi") is not None)
+            dimension = criteria_row.get("Dimension", "H0D")
+           
+            if has_modeling:
+                composite_key = None          
+            else:
+                composite_key = f"{criteria_row['Criteria_label']}_{study_ref}"
+                print(f"📚 Generated CriteriaValuesNdimRef: {composite_key}")          
+           
+            main_row = {
+                "Study_ref": study_ref,
+                "CriteriaValuesNdimRef": composite_key,
+                "Study_title": study_metadata.get("Study_title"),
+                "Criteria_label": criteria_row["Criteria_label"],
+                "Norm_applied": criteria_row.get("Norm_applied"),
+                "Population_description": population_description,  
+                "Sample_definition": sample_definition,  
+                "Final_stats_min_max_moyenne": criteria_row.get("Final_stats_min_max_moyenne"),
+                "loi": criteria_row.get("loi"),
+                "parameters": criteria_row.get("parameters"),
+                "class_index": criteria_row.get("class_index"),
+                "R2": criteria_row.get("R2"),
+                "client1pct": criteria_row.get("client1pct"),
+                "client50pct": criteria_row.get("client50pct"),
+                "client99pct": criteria_row.get("client99pct"),
+                "sample_client1pct": criteria_row.get("sample_client1pct"),
+                "sample_client50pct": criteria_row.get("sample_client50pct"),
+                "sample_client99pct": criteria_row.get("sample_client99pct")
+            }
+           
+            main_rows.append(main_row)
+           
+            # Process dfmatrix if exists
+            dfmatrix = criteria_row.get("dfmatrix")
+           
+            if dfmatrix and dfmatrix not in ["", "none", "None", None]:
+                df_ndim = explode_matrix_to_dataframe(
+                    dfmatrix_json=dfmatrix,
+                    study_ref=study_ref,
+                    criteria_label=criteria_row["Criteria_label"]
+                )
+               
+                if df_ndim is not None and len(df_ndim) > 0:
+                    all_ndim_records.append(df_ndim)
+       
+        # Store main table
+        import pandas as pd
+        df_main = pd.DataFrame(main_rows)
+        df_main = spark.createDataFrame(df_main)
+        store_pfm_insights(df_main, table_name=main_table, study_title=None)
+       
+        print(f"✅ Stored {len(main_rows)} criteria to main table")
+       
+        # Store ndim table if matrix data exists
+        if len(all_ndim_records) > 0:
+            df_ndim_combined = pd.concat(all_ndim_records, ignore_index=True)
+            df_ndim_combined = spark.createDataFrame(df_ndim_combined)
+            store_pfm_insights(df_ndim_combined, table_name=ndim_table, study_title=None)
+           
+            dim_summary = df_ndim_combined.groupby(['Criteria_label', 'Dimension']).size().to_dict()
+            print(f"✅ Stored matrix data:")
+            for (criteria, dim), count in dim_summary.items():
+                print(f"   - {criteria} ({dim}): {count} records")
+        else:
+            print(f"⚠️  No matrix data to store")
+       
+        return study_ref
+   
+    else:
+        raise ValueError(f"Invalid level '{level}'. Must be one of: 'TRIP_ID', 'DRIVER_ID', 'PFM'")
